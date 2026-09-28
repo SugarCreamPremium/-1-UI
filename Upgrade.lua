@@ -1,4 +1,4 @@
--- Version 1.50
+-- Version 2.18
 -- แถบ Upgrade (อัปเกรดอัตโนมัติ)
 --
 -- กลไกของเกมที่ใช้ (อ่านจากดัมป์):
@@ -185,7 +185,7 @@ end
 local autoEnabled = false
 local autoRunning = false
 local statEnabled = {OrePack = true, Train = true, Luck = true}
-local label = nil
+local labels = {}
 
 -- นับครั้งที่ยิงแล้วเลเวลไม่ขยับ ถ้าพัง 3 ครั้งติดก็แสดงว่าเราอ่านเลเวลไม่ได้
 --   (หรือเซิร์ฟเวอร์ปฏิเสธ) ถ้าไม่หยุด มันจะยิงซ้ำราคาเดิมไปเรื่อย ๆ เปลืองเงิน
@@ -258,29 +258,28 @@ local function fmt(n)
     return tostring(n)
 end
 
-local function updateLabel()
-    if not label then return end
+-- เขียนข้อความลง Paragraph หนึ่งอัน
+--   Paragraph ไม่มี SetValue แต่มี SetDesc ของตัวเฟรมข้างใน (components/window/Element.lua:482)
+local function setDesc(entry, text)
+    if not entry then return end
+    entry.Desc = text
+    pcall(function() entry.ParagraphFrame:SetDesc(text) end)
+end
 
-    -- แยกทีละบรรทัด อย่ายัดไว้บรรทัดเดียว ไม่งั้นข้อความยาวเกินแล้วโดนตัดทิ้ง
-    local parts = {}
-    local coin = getCoin()
-    if coin then
-        parts[#parts + 1] = "เหรียญ " .. fmt(coin)
-    end
+-- สถานะแยกทีละบรรทัด เป็นคนละ Paragraph กัน
+--   Desc ของ Paragraph เป็นบรรทัดเดียว ถ้าใส่ \n แล้วยาวเกินกรอบจะถูกตัดทิ้ง
+local function updateLabel()
+    setDesc(labels.Coin, "เหรียญ " .. fmt(getCoin()))
     for _, name in ipairs(STATS) do
         local price = nextPrice(name)
-        local levelText = STAT_NAME[name] .. " Lv." .. getLevel(name)
+        local text = "Lv." .. getLevel(name)
         if price then
-            parts[#parts + 1] = levelText .. " -> " .. fmt(price)
+            text = text .. " -> " .. fmt(price)
         else
-            parts[#parts + 1] = levelText .. " (ตัน)"
+            text = text .. " (ตันแล้ว)"
         end
+        setDesc(labels[name], text)
     end
-
-    local text = table.concat(parts, "\n")
-    label.Desc = text
-    -- Paragraph ไม่มี SetValue แต่มี SetDesc ของตัวเฟรมข้างใน (components/window/Element.lua:482)
-    pcall(function() label.ParagraphFrame:SetDesc(text) end)
 end
 
 -- รีเฟรชข้อมูลทุก 2 วิ ไม่ต้องกดเอง
@@ -338,11 +337,10 @@ function Upgrade.register(context)
             Callback = setAuto,
         })
 
-        local status = section:Paragraph({
-            Title = "สถานะ",
-            Desc = "กำลังอ่านข้อมูล...",
-        })
-        label = status
+        labels.Coin = section:Paragraph({Title = "เหรียญ", Desc = "..."})
+        for _, name in ipairs(STATS) do
+            labels[name] = section:Paragraph({Title = STAT_NAME[name], Desc = "..."})
+        end
     end
 
     local pick = tab:Section({Title = "เลือกว่าจะอัพตัวไหน", Opened = true})
