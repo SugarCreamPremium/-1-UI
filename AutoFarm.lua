@@ -1,4 +1,4 @@
--- Version 11.36
+-- Version 11.39
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจร: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
@@ -263,25 +263,14 @@ end
 -- ============================================
 -- ยิง ProximityPrompt
 -- ============================================
--- ตามเอกสาร Roblox ProximityPrompt มีแค่ 2 เมธอด คือ InputHoldBegin/InputHoldEnd
---   (create.roblox.com/docs/reference/engine/classes/ProximityPrompt) = ไม่มี :Fire()
---   ถ้าเรียก :Fire() ตรง ๆ แล้วไม่มีจะ error แบบเดียวกับ .Event:Fire() บน Signal
---   แต่ executor บางตัวเพิ่ม :Fire() ให้เอง จึงลองทั้งสองทาง
---   โดยเช็คผลจริง (prompt ถูกปิด = เกมรับ callback แล้ว) ไม่เชื่อแค่ว่าเรียกสำเร็จ
---   วิธีที่ได้ผลถูกจำไว้ใน promptMethod แล้วใช้ตัวเดิมต่อ ไม่ต้องเดาใหม่ทุกชิ้น
+-- executor เติม :Fire() ให้ instance ใน runtime ซึ่งเอกสาร Roblox ไม่บันทึกไว้
+--   (create.roblox.com ระบุแค่ InputHoldBegin/InputHoldEnd เป็นเมธอดของ ProximityPrompt)
+--   ทดสอบกับ Infinite Yield แล้ว :Fire() เก็บของได้ทันทีทุกระยะ ไม่ต้องเข้าใกล้
+--   จึงใช้เป็นทางหลัก และเก็บ InputHoldBegin ไว้เป็นทางสำรอง
+--     ถ้า executor ไม่มีเมธอดนี้ (pcall จับ error ได้)
 local promptMethod = nil
 
--- เรียก prompt ด้วยวิธีที่เคยได้ผล ถ้ายังไม่รู้ให้ลอง Fire ก่อน แล้วค่อย InputHoldBegin
--- คืน true ถ้ามีเมธอดที่เรียกได้ (ยังไม่ได้แปลว่าเกมจะรับ ต้องรอเช็ค prompt.Enabled)
 local function firePrompt(prompt)
-    if promptMethod == "InputHoldBegin" then
-        if pcall(function() prompt:InputHoldBegin() end) then return true end
-        promptMethod = nil
-    elseif promptMethod == "Fire" then
-        if pcall(function() prompt:Fire() end) then return true end
-        promptMethod = nil
-    end
-
     if pcall(function() prompt:Fire() end) then
         promptMethod = "Fire"
         return true
@@ -293,21 +282,23 @@ local function firePrompt(prompt)
     return false
 end
 
--- ลองอีกทางหนึ่ง ใช้ตอนวิธีแรกไม่ได้ผล
---   ต้อง "สลับ" ไปเรียกตัวที่ยังไม่ได้ลอง ไม่ใช่ล้าง promptMethod เป็น nil
---   เพราะถ้าล้างเป็น nil firePrompt จะเริ่มจาก Fire อีกครั้งเสมอ
---   แล้ว InputHoldBegin จะไม่มีโอกาสถูกลองเลย (retry เป็น no-op)
-local function firePromptAlt(prompt)
-    if promptMethod == "Fire" then
-        promptMethod = "InputHoldBegin"
-        if pcall(function() prompt:InputHoldBegin() end) then return true end
-    elseif promptMethod == "InputHoldBegin" then
-        promptMethod = "Fire"
-        if pcall(function() prompt:Fire() end) then return true end
+-- ยิงแล้วรอจนกว่าเกมจะรับ -> คืน true ถ้าได้ของ
+-- สัญญาณว่าเกมรับแล้ว: prompt ถูกปิด (เกมสั่งใน FlyToPlayer) หรือโมเดลถูกทำลาย
+--   (OreDropUtils.lua:157-159) ถ้ากระเป๋าเต็ม prompt จะยัง Enabled เพราะ callback
+--   ของเกม return ออกก่อน -> ใช้สัญญาณนี้แทนการอ่าน HUD ได้เลย
+local function fireAndWait(prompt, ore)
+    firePrompt(prompt)
+    -- :Fire() ทำงานทันที ไม่ต้องรอ HoldDuration 0.5 วิ ของเกม
+    --   เช็คก่อนรอเลย เก็บได้เร็วกว่ามาก
+    if not prompt.Enabled or not ore.Parent then return true end
+
+    local waited = 0
+    while waited < 1.5 do
+        task.wait(0.1)
+        waited = waited + 0.1
+        if not prompt.Enabled or not ore.Parent then return true end
     end
-    -- ทั้งสองทางไม่มีเมธอดที่เรียกได้เลย -> ล้างให้รอบหน้าลองใหม่
-    promptMethod = nil
-    return firePrompt(prompt)
+    return false
 end
 
 -- หา ProximityPrompt ของแร่ 1 ชิ้น
@@ -379,23 +370,8 @@ local function collectOres()
         if not prompt then
             noPrompt = noPrompt + 1
         elseif prompt.Enabled then
-            firePrompt(prompt)
-
-            -- รอจนกว่าเกมจะปิด prompt = รับ callback แล้ว
-            -- ถ้ายังไม่มีอะไรเกิดขึ้นใน 0.7 วิ แปลว่าวิธีแรกไม่ได้ผล
-            --   (เช่น :Fire() มีอยู่แต่ไม่ trigger) ให้ล้างทางที่จำไว้แล้วลองใหม่
-            local waited, retried = 0, false
-            while waited < 2 do
-                task.wait(0.1)
-                waited = waited + 0.1
-                if not prompt.Enabled or not ore.Parent then
-                    taken = taken + 1
-                    break
-                end
-                if not retried and waited >= 0.7 then
-                    retried = true
-                    firePromptAlt(prompt)
-                end
+            if fireAndWait(prompt, ore) then
+                taken = taken + 1
             end
         end
     end
