@@ -1,6 +1,5 @@
--- Version 11.58
+-- Version 12.06
 -- แถบ Auto Farm (วางไว้บนสุด)
-print("ควยยยยย")
 --
 -- วงจร: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
 --
@@ -366,11 +365,17 @@ local function collectOres()
     -- 2) เก็บทีละชิ้นจากแพงสุด หยุดทันทีที่กระเป๋าเต็ม
     --    ถ้ากระเป๋าพอทั้งหมดจะเก็บครบทุกชิ้นเท่ากัน
     local taken, noPrompt = 0, 0
+    local loggedPath = false
     for _, ore in ipairs(ores) do
         local prompt = findOrePrompt(ore)
         if not prompt then
             noPrompt = noPrompt + 1
         elseif prompt.Enabled then
+            -- พิสูจน์ path จริงที่หาเจอ ครั้งเดียวต่อรอบ
+            if not loggedPath then
+                loggedPath = true
+                print("[Auto Farm] path: " .. prompt:GetFullName())
+            end
             if fireAndWait(prompt, ore) then
                 taken = taken + 1
             end
