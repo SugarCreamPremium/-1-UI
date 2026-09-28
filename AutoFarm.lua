@@ -1,4 +1,4 @@
--- Version 1.00
+-- Version 10.30
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจร: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
@@ -27,40 +27,73 @@ local MAP_PATH = {workspace, "WorldModel", "StageMap"}
 local ENEMY_FOLDER_NAME = "EnemyFolder"
 local ORE_CACHE_NAME = "OreCache"
 
-local CommunicationUtils = ReplicatedStorage:WaitForChild("Utils"):WaitForChild("CommunicationUtils")
-local EnemyHitBE = CommunicationUtils.TryGetBindableEvent("Attack", "EnemyHitBE")
-local ExitFightBE = CommunicationUtils.TryGetBindableEvent("Stage", "ExitFightBE")
+-- ============================================
+-- ดึง BindableEvent โดยไม่ต้อง require
+-- ============================================
+-- ห้าม require(CommunicationUtils) เด็ดขาด
+--   executor ที่ require ModuleScript จะได้ตารางที่ไม่มี member
+--   (error: "TryGetBindableEvent is not a valid member of ModuleScript")
+--   ทั้งที่ฟังก์ชันมีอยู่จริง เพราะ Roblox ไม่ให้ sandbox อ่าน member ของ ModuleScript
+-- ทางแก้: ดึง instance โดยตรงจาก path แล้วเรียก :Fire() ได้เลย เพราะเป็น instance จริง
+--   ReplicatedStorage.Remote.<โฟลเดอร์>.<ชื่อ>
+-- ถ้ายังไม่มี (เกมสร้างตอน require ครั้งแรก) ให้สร้างเอง ซึ่งเกมทำแบบเดียวกัน
+--   CommunicationUtils.Create:40-49 สร้าง BindableEvent ได้ทั้งฝั่ง client
+--   (มีแค่ RemoteEvent/RemoteFunction ที่ถูกห้ามสร้าง)
+local function getBindable(folderName, eventName)
+    local root = ReplicatedStorage:FindFirstChild("Remote")
+    if not root then
+        root = Instance.new("Folder")
+        root.Name = "Remote"
+        root.Parent = ReplicatedStorage
+    end
+    local folder = root:FindFirstChild(folderName)
+    if not folder then
+        folder = Instance.new("Folder")
+        folder.Name = folderName
+        folder.Parent = root
+    end
+    local ev = folder:FindFirstChild(eventName)
+    if not ev then
+        ev = Instance.new("BindableEvent")
+        ev.Name = eventName
+        ev.Parent = folder
+    end
+    return ev
+end
+
+local EnemyHitBE = getBindable("Attack", "EnemyHitBE")
+local ExitFightBE = getBindable("Stage", "ExitFightBE")
 
 -- ============================================
 -- รายชื่อสเตจ
 -- ============================================
--- ตารางจริงอยู่ที่ ReplicatedStorage/Config/Stage/StageEnemyConfig.lua
--- มี Stage_1 ถึง Stage_27 และเป็นแหล่งเดียวกับที่ StageUtils ใช้
---   (StageUtils.Init: for i, j in Helper.GetStageEnemyConfig() -> u140[i] = {})
--- ชื่อสเตจที่รันได้จริงต้องมีใน u140 เท่านั้น ไม่งั้น StartStage จะ error
-local StageHelper = ReplicatedStorage:FindFirstChild("Config")
-    and ReplicatedStorage.Config:FindFirstChild("Stage")
-    and ReplicatedStorage.Config.Stage:FindFirstChild("Helper")
-
+-- อ่านจาก StageMap.EnemyPoint แทนที่จะ require(Config.Stage.Helper) ด้วยเหตุผลเดียวกันข้างบน
+-- EnemyPoint คือแหล่งที่ StageUtils ใช้ตรวจเองว่าสเตจนี้รันได้หรือไม่
+--   (StageUtils.lua:298  if not EnemyPoint:FindFirstChild(p1) then return end)
+-- จึงเป็นรายชื่อที่ตรงกับสิ่งที่เล่นได้จริงเสมอ และไม่ต้องพึ่ง require
 local function getStageNames()
-    if StageHelper then
-        local ok, config = pcall(function() return StageHelper.GetStageEnemyConfig() end)
-        if ok and type(config) == "table" then
-            local names = {}
-            for name in pairs(config) do
-                if type(name) == "string" then table.insert(names, name) end
-            end
-            if #names > 0 then
-                -- เรียงตามเลขในชื่อ ไม่งั้น pairs จะสุ่มลำดับ
-                table.sort(names, function(a, b)
-                    return (tonumber(a:match("_(%d+)")) or 0) < (tonumber(b:match("_(%d+)")) or 0)
-                end)
-                return names
+    local points = nil
+    local map = workspace:FindFirstChild("WorldModel")
+    local stageMap = map and map:FindFirstChild("StageMap")
+    points = stageMap and stageMap:FindFirstChild("EnemyPoint")
+
+    if points then
+        local names = {}
+        for _, child in ipairs(points:GetChildren()) do
+            if child:IsA("Folder") or child:IsA("Model") then
+                table.insert(names, child.Name)
             end
         end
-
+        if #names > 0 then
+            -- เรียงตามเลขในชื่อ ไม่งั้นลำดับจะสุ่ม
+            table.sort(names, function(a, b)
+                return (tonumber(a:match("_(%d+)")) or 0) < (tonumber(b:match("_(%d+)")) or 0)
+            end)
+            return names
+        end
     end
-    -- สำรอง: ถ้า require config ไม่ได้
+
+    -- สำรอง: ยังไม่ได้โหลดแมพเสร็จ หรือโครงสร้างเปลี่ยน
     local names = {}
     for i = 1, 27 do table.insert(names, "Stage_" .. i) end
     return names
@@ -272,6 +305,16 @@ function AutoFarm.register(context)
         pcall(function()
             WindUI:Notify({Title = title, Content = desc, Duration = 3})
         end)
+    end
+
+    -- อ่านซ้ำตอนเปิดหน้าต่าง เพราะตอนโหลดโมดูลแมพอาจยังไม่เข้า workspace เต็ม
+    -- ถ้าได้รายชื่อจริงมา ให้ใช้ของจริงแทนรายการสำรอง
+    local names = getStageNames()
+    if #names > 0 then
+        STAGE_NAMES = names
+        if selectedStage == nil or not table.concat(STAGE_NAMES, ","):find(selectedStage, 1, true) then
+            selectedStage = STAGE_NAMES[1]
+        end
     end
 
     -- ชื่อที่แสดง "Stage 1" แต่ค่าจริงต้องเป็น "Stage_1" ที่เกมรู้จัก
