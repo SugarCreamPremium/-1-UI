@@ -1,4 +1,4 @@
--- Version 1.31
+-- Version 1.38
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจร: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
@@ -523,8 +523,8 @@ local function runRound()
         exitFight(true, false)
     end
 
-    -- 10) หน่วง 3 วิ ก่อนเริ่มรอบใหม่
-    task.wait(3)
+    -- 10) หน่วง 1 วิ ก่อนเริ่มรอบใหม่
+    task.wait(1)
 end
 
 local function farmLoop()
@@ -578,12 +578,6 @@ function AutoFarm.register(context)
         tab:Paragraph({Title = "Auto Farm", Desc = "ไม่สามารถสร้างส่วนควบคุมได้"})
         return
     end
-
-    section:Paragraph({
-        Title = "วิธีใช้",
-        Desc = "เลือกสเตจ -> เปิดสวิตช์ -> ตัวละครจะวาร์ปไปที่สเตจ ฆ่ามอนให้ครบ "
-            .. "เก็บแร่จากอันแพงสุดไปจนกระเป๋าเต็ม แล้วกลับจุดเกิดวนต่อ",
-    })
 
     section:Dropdown({
         Title = "เลือกสเตจ",
