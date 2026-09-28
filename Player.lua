@@ -1,4 +1,4 @@
--- Version 9.25
+-- Version 9.34
 -- หมวดผู้เล่น
 -- โมดูลนี้ไม่ require อะไรจากเกม ใช้แค่ Players + workspace
 -- เพราะเกมนี้ไม่มี require(player.PlayerScripts.Client) แบบเกมอื่น
@@ -193,8 +193,7 @@ function Player.register(context)
     if hpSection then
         hpSection:Toggle({
             Title = "เลือดไม่จำกัด (Inf)",
-            Desc = "ตั้ง HPValue ของตัวเองเป็น Inf เลือดไม่มีวันหมด "
-                .. "(ตัวเลขบนแถบเลือดจะขึ้น nan แต่แถบยังเต็มปกติ)",
+            Desc = "ตั้งเลือดของตัวเองให้ไม่จำกัด ไม่มีวันตาย",
             Value = false,
             Callback = setPlayerInf,
         })
@@ -204,7 +203,7 @@ function Player.register(context)
     if moveSection then
         moveSection:Slider({
             Title = "ความเร็วเดิน",
-            Desc = "ล็อคค่าไว้ เกมจะเปลี่ยนกลับไม่ได้ (รวมถึง debuff ที่ลดความเร็วด้วย)",
+            Desc = "ตั้งค่าความเร็วในการเดินของตัวละครผู้เล่น",
             Value = {Min = WALK_MIN, Max = WALK_MAX, Default = WALK_DEFAULT},
             Step = 1,
             Callback = setWalk,
