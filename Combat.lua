@@ -1,4 +1,4 @@
--- Version 10.41
+-- Version 10.45
 -- หมวดต่อสู้
 local Combat = {}
 
@@ -124,7 +124,7 @@ local function hitEnemy(enemy)
     -- ต้องส่ง 3 อาร์กิวเมนต์: SuperLootManager.client.lua:78 ทำ p3.Damage = ...
     -- ถ้าส่งแค่ 2 จะ error ตรงนั้น
     pcall(function()
-        EnemyHitBE.Event:Fire(enemy.Name, damage, {
+        EnemyHitBE:Fire(enemy.Name, damage, {
             SkillID = "K_ATK_1",
             IsCrit = false,
             Damage = damage,
