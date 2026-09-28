@@ -1,4 +1,4 @@
--- Version 11.07
+-- Version 11.21
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจร: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
@@ -13,10 +13,11 @@
 --   ตาย:  EnemyHitBE:Fire(uuid, ดาเมจ, opts) -> StageUtils.HurtEnemy
 --         -> EnemyCTRL.HurtEnemy -> HPCTRL.DamageOnce -> Value <= 0
 --         -> CheckStageFinishedOnce -> FinishStage -> OreUtils.CreateOres ทิ้งของลงพื้น
---   ออก:  ExitFightBE:Fire(true) -> StageUtils.ExitFight (StageUtils.lua:175-198)
---         -> ClaimedAllOreRE:FireServer()  เก็บของทั้งหมดบนพื้น
+--   ออก:  ExitFightBE:Fire(claimOres, skipWarp) -> StageUtils.ExitFight (StageUtils.lua:175-198)
+--         claimOres = true  เก็บของที่เหลือบนพื้น (ClaimedAllOreRE:FireServer)
+--         skipWarp  = true  ไม่วาร์ปกลับจุดเกิด (ไม่งั้นโดน ToSpawn เสมอ)
 --         -> OreUtils.CleanOres()
---         -> TranslateUtils.ToSpawn()      วาร์ปกลับจุดเกิด
+--         -> TranslateUtils.ToSpawn()      วาร์ปกลับจุดเกิด (ถ้า skipWarp = false)
 local AutoFarm = {}
 
 local Players = game:GetService("Players")
@@ -158,17 +159,25 @@ local function warpToStage(stageName)
 end
 
 -- ============================================
+-- ออกจากสเตจ
+-- ============================================
+-- ExitFightBE ส่งต่ออาร์กิวเมนต์ให้ครบทั้งสองตัว
+--   (StageManager.client.lua:51-54 -> StageUtils.ExitFight(p1, p2))
+--   p1 = true  เก็บของที่เหลือบนพื้น (ClaimedAllOreRE:FireServer)
+--   p2 = true  ไม่วาร์ปกลับจุดเกิด
+-- ค่า p2 สำคัญมาก เพราะ ExitFight ลงท้ายด้วย TranslateUtils.ToSpawn เสมอ
+--   (StageUtils.lua:195-197) ถ้าไม่กด p2 = true เราจะโดนวาร์ปกลับทันทีหลังออก
+local function exitFight(claimOres, skipWarp)
+    ExitFightBE:Fire(claimOres == true, skipWarp == true)
+end
+
+-- ============================================
 -- เข้าสเตจ
 -- ============================================
--- ตั้ง attribute เองแทนการเดินทับ AreaPart เพราะ AreaPart มีแค่ 7 พื้นที่
---   แต่ StartFight/StartStage รับชื่อสเตจได้ทั้ง 27 ตามคีย์ใน u140
 -- ต้องล้างค่าเก่าก่อน ไม่งั้นตั้งค่าเดิมซ้ำ = Roblox ไม่ยิง signal = ไม่เกิด StartFight
+-- หมายเหตุ: ต้องไม่ ExitFight ตรงนี้ เพราะมันวาร์ปกลับจุดเกิดทันที
+--   ถ้าอยู่ในสเตจอื่นอยู่ ให้ clearStage จัดการก่อนวาร์ป (ดู runRound ข้อ 2)
 local function enterStage(stageName)
-    if player:GetAttribute("IntoFight") then
-        -- ค้างอยู่ในสเตจอื่นอยู่ -> ออกก่อน
-        ExitFightBE:Fire(true)
-        task.wait(1.5)
-    end
     player:SetAttribute("StageID", nil)
     player:SetAttribute("StageID", stageName)
 end
@@ -213,6 +222,17 @@ local function stageDone()
     local cache = getOreCache()
     if not cache then return false end
     return #cache:GetChildren() > 0
+end
+
+-- ตอนนี้มีมอนกี่ตัวในสเตจ (ใช้เช็คว่าเข้าสเตจสำเร็จหรือยัง)
+local function countEnemies()
+    local folder = getEnemyFolder()
+    if not folder then return 0 end
+    local count = 0
+    for _, enemy in ipairs(folder:GetChildren()) do
+        if enemy:IsA("Model") then count = count + 1 end
+    end
+    return count
 end
 
 -- ============================================
@@ -349,6 +369,10 @@ end
 -- หนึ่งรอบของการฟาร์ม คืนทุกทางที่ "รอบนี้ไม่สำเร็จ"
 -- แยกจาก farmLoop เพื่อใช้ return แทน continue (continue เป็นคีย์เวิร์ดเฉพาะ Luau)
 local function runRound()
+    local function log(msg)
+        print("[Auto Farm] " .. msg)
+    end
+
     -- 1) รอจนฟื้นฟู (ถ้าตายอยู่ ไม่ต้องทำอะไรรอบนี้)
     if player:GetAttribute("Dead") then
         waitUntil(function() return not player:GetAttribute("Dead") end, 30)
@@ -357,18 +381,43 @@ local function runRound()
     -- 2) รอตัวละครพร้อม
     if not waitUntil(function() return getHRP() ~= nil end, 15) then return end
 
-    -- 3) วาร์ปไปที่สเตจที่เลือก (ทำทุกรอบ ไม่มีตัวเลือกปิด)
+    -- 3) เคลียร์สเตจเก่าก่อนวาร์ป
+    --    ExitFight ล้าง EnemyTab ของทุกสเตจ (StageUtils.lua:186-188)
+    --      ถ้าค้างค่าไว้แล้วเข้าสเตจใหม่ EnemyTab จะถูกล้างทับตอน ExitFight
+    --      ทำให้ EnemyHitBE ยิงแล้วไม่มีใครรับ = ไม่มีดาเมจเลย
+    --    ส่ง skipWarp = true เพื่อไม่ให้โดนวาร์ปกลับจุดเกิดตรงนี้
+    --    เพราะเรากำลังจะวาร์ปไปสเตจอยู่ดี
+    if player:GetAttribute("IntoFight") then
+        log("ออกจากสเตจเดิมก่อน")
+        exitFight(true, true)
+        task.wait(1.5)
+    end
+
+    -- 4) วาร์ปไปที่สเตจที่เลือก
     if not warpToStage(selectedStage) then
-        -- วาร์ปไม่ได้ = ยังโหลดแมพไม่เสร็จ หรือชื่อสเตจผิด
-        -- ถ้าเข้าสเตจต่อทันทีมอนจะเกิดที่จุดเกิดแล้วเดินกลับมาเองช้า
+        log("วาร์ปไม่ได้ (แมปยังไม่โหลด?) -> รอ 1 วิ")
         task.wait(1)
     end
     task.wait(0.4)
+    log("วาร์ปไป " .. tostring(selectedStage))
 
-    -- 4) เข้าสเตจ
+    -- 5) เข้าสเตจ
     enterStage(selectedStage)
 
-    -- 5) ฆ่ามอนวนจนของเริ่มตก = สเตจจบแล้ว
+    -- 6) รอมอนเกิด (สูงสุด 10 วิ)
+    --    ถ้าไม่มีมอนเกิด = สเตจนี้เล่นไม่ได้ เช่น ยังไม่ปลดล็อก
+    --    (CreateStageEnemys จะเตือน "缺少敌人点位" แล้ว return ถ้าไม่มี EnemyPoint)
+    if not waitUntil(function() return countEnemies() > 0 end, 10) then
+        log("ไม่มีมอนเกิดที่ " .. tostring(selectedStage) .. " (ยังไม่ปลด หรือชื่อผิด?)")
+        if player:GetAttribute("IntoFight") then
+            exitFight(false, true)
+        end
+        task.wait(2)
+        return
+    end
+    log("มอนเกิด " .. countEnemies() .. " ตัว")
+
+    -- 7) ฆ่ามอนวนจนของเริ่มตก = สเตจจบแล้ว
     --    ต้องยิงไปเรื่อย ๆ ไม่ใช่ยิงรอบเดียว เพราะ FinishStage
     --    จะสร้างของต่อเมื่อทุกตัวใน EnemyTab ตายครบเท่านั้น
     --    (ยิงครั้งเดียวแล้วไปรอของ = ค้างจน timeout เพราะมอนที่เหลือยังไม่ตาย)
@@ -387,22 +436,30 @@ local function runRound()
     end
 
     if not done then
-        -- hit == 0 = มอนไม่เกิดเลย (สแตจยังไม่ปลด หรือเข้าไม่ได้)
-        -- hit > 0 = ฆ่าแล้วแต่ของไม่ตก = เซิร์ฟเวอร์ไม่ยอมให้ของของสแตจนี้
-        ExitFightBE:Fire(true)
+        -- hit == 0 = มอนตายแล้วแต่ของไม่ตก = เซิร์ฟเวอร์ไม่ยอมให้ของ
+        -- hit > 0  = ยิงไม่เข้า = EnemyTab ถูกล้าง หรือ UUID ไม่ตรง
+        log("ฆ่าไม่จบ (ยิงไป " .. hit .. " ครั้ง) ของไม่ตก")
+        if player:GetAttribute("IntoFight") then
+            exitFight(false, false)
+        end
         task.wait(2)
         return
     end
+    log("ฆ่าครบ (ยิง " .. hit .. " ครั้ง) ของตกแล้ว")
 
-    -- 6) เก็บของ: แพงสุดก่อน จนกว่ากระเป๋าจะเต็ม (หรือเก็บครบถ้าพอ)
-    collectOres()
+    -- 8) เก็บของ: แพงสุดก่อน จนกว่ากระเป๋าจะเต็ม (หรือเก็บครบถ้าพอ)
+    local taken, total = collectOres()
+    log("เก็บของได้ " .. taken .. " / " .. total .. " ชิ้น")
     task.wait(0.5)
 
-    -- 7) ออกจากสเตจ -> ExitFight เก็บของที่เหลือให้เอง แล้ววาร์ปกลับจุดเกิด
-    --    (StageUtils.lua:175-198: ClaimedAllOreRE:FireServer -> CleanOres -> ToSpawn)
-    ExitFightBE:Fire(true)
+    -- 9) ออกจากสเตจ -> ExitFight เก็บของที่เหลือให้เอง แล้ววาร์ปกลับจุดเกิด
+    --    (StageUtils.lua:189-197: ClaimedAllOreRE:FireServer -> CleanOres -> ToSpawn)
+    if player:GetAttribute("IntoFight") then
+        exitFight(true, false)
+    end
+    log("กลับจุดเกิดแล้ว")
 
-    -- 8) หน่วง 3 วิ ก่อนเริ่มรอบใหม่
+    -- 10) หน่วง 3 วิ ก่อนเริ่มรอบใหม่
     task.wait(3)
 end
 
