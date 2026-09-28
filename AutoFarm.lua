@@ -1,4 +1,4 @@
--- Version 11.21
+-- Version 11.29
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจร: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
@@ -261,23 +261,60 @@ local function getOrePrice(name)
 end
 
 -- ============================================
--- อ่านจำนวนของในกระเป๋า
+-- ยิง ProximityPrompt
 -- ============================================
--- ตัวเลขนี้อยู่ใน LeftInfoGUI.lua:64-81 เป็นตัวแปร module-local (u66)
---   อ่านจากข้างนอกไม่ได้ และ UpgradeData ก็เป็น ModuleScript เหมือนกัน
--- ทางที่ใช้ได้คืออ่านจาก HUD ที่เกมวาดไว้ให้อยู่แล้ว
---   PlayerGui.Hud.LeftInfos.OrePack.Title.Text = "3/4"
--- ค่านี้ไม่ผ่าน AbbreviateNumber (LeftInfoGUI.lua:76) จึงเป็นเลขเต็มอ่านตรง ๆ ได้
-local function getPack()
-    local gui = player:FindFirstChildOfClass("PlayerGui")
-    local hud = gui and gui:FindFirstChild("Hud")
-    local left = hud and hud:FindFirstChild("LeftInfos")
-    local pack = left and left:FindFirstChild("OrePack")
-    local title = pack and pack:FindFirstChild("Title")
-    if not title or type(title.Text) ~= "string" then return nil end
-    local cur, max = title.Text:match("(%d+)/(%d+)")
-    if not cur or not max then return nil end
-    return tonumber(cur), tonumber(max)
+-- ตามเอกสาร Roblox ProximityPrompt มีแค่ 2 เมธอด คือ InputHoldBegin/InputHoldEnd
+--   (create.roblox.com/docs/reference/engine/classes/ProximityPrompt) = ไม่มี :Fire()
+--   ถ้าเรียก :Fire() ตรง ๆ แล้วไม่มีจะ error แบบเดียวกับ .Event:Fire() บน Signal
+--   แต่ executor บางตัวเพิ่ม :Fire() ให้เอง จึงลองทั้งสองทาง
+--   โดยเช็คผลจริง (prompt ถูกปิด = เกมรับ callback แล้ว) ไม่เชื่อแค่ว่าเรียกสำเร็จ
+--   วิธีที่ได้ผลถูกจำไว้ใน promptMethod แล้วใช้ตัวเดิมต่อ ไม่ต้องเดาใหม่ทุกชิ้น
+local promptMethod = nil
+
+-- เรียก prompt ด้วยวิธีที่เคยได้ผล ถ้ายังไม่รู้ให้ลอง Fire ก่อน แล้วค่อย InputHoldBegin
+-- คืน true ถ้ามีเมธอดที่เรียกได้ (ยังไม่ได้แปลว่าเกมจะรับ ต้องรอเช็ค prompt.Enabled)
+local function firePrompt(prompt)
+    if promptMethod == "InputHoldBegin" then
+        if pcall(function() prompt:InputHoldBegin() end) then return true end
+        promptMethod = nil
+    elseif promptMethod == "Fire" then
+        if pcall(function() prompt:Fire() end) then return true end
+        promptMethod = nil
+    end
+
+    if pcall(function() prompt:Fire() end) then
+        promptMethod = "Fire"
+        return true
+    end
+    if pcall(function() prompt:InputHoldBegin() end) then
+        promptMethod = "InputHoldBegin"
+        return true
+    end
+    return false
+end
+
+-- หา ProximityPrompt ของแร่ 1 ชิ้น
+--   โครงสร้างจริง: workspace.OreCache.Ore_47.MAIN.ProximityPrompt
+--   เกมสร้างด้วย Instance.new("ProximityPrompt", Model.PrimaryPart) (OreDropUtils.lua:123)
+--     แต่ PrimaryPart ของ clone ที่ได้มาอาจไม่ใช่ตัว MAIN ที่ prompt ติดอยู่จริง
+--     ถ้าอ่านแค่ PrimaryPart แล้วมันไม่ใช่ตัวนั้น ก็จะหา prompt ไม่เจอเลย
+--   เลยไล่จาก MainPart -> MAIN -> Main -> ทั้งโมเดล ตามลำดับ
+local function findOrePrompt(ore)
+    local primary = ore.PrimaryPart
+    if primary then
+        local prompt = primary:FindFirstChildOfClass("ProximityPrompt")
+        if prompt then return prompt end
+    end
+    local main = ore:FindFirstChild("MAIN") or ore:FindFirstChild("Main")
+    if main then
+        local prompt = main:FindFirstChildOfClass("ProximityPrompt")
+        if prompt then return prompt end
+    end
+    -- สำรอง: ไล่ทั้งโมเดล (โครงสร้างเปลี่ยนไปจากนี้ก็ยังเจอ)
+    for _, desc in ipairs(ore:GetDescendants()) do
+        if desc:IsA("ProximityPrompt") then return desc end
+    end
+    return nil
 end
 
 -- ============================================
@@ -287,14 +324,18 @@ end
 --   ชื่อจึงเป็น "Ore_1".."Ore_48" เหมือนกันหมด ใช้ชื่อหา ID ได้เลย
 --   (OreDropUtils.lua:55-65)
 --
--- การกดเก็บจริงทำผ่าน ProximityPrompt ที่เกมแปะไว้บน PrimaryPart
---   OreUtils.lua:59-74 -> callback นี้ปิดค่า UUID ไว้ข้างใน แล้วทำงานนี้เรียงครบ:
---       UpdateOrePack(count + 1)  อัปเดต HUD
---       PickupOreBE:Fire()         บอก UI ว่าเก็บแล้ว
---       GetOreRF:InvokeServer(uuid)  ให้เซิร์ฟเวอร์จองของให้
--- UUID อยู่ในตารางภายในของ OreDropUtils จึงอ่านตรง ๆ ไม่ได้
---   แต่ไม่ต้องรู้ก็ได้ เพราะ prompt เรียก callback นั้นให้เราเองได้
---   ด้วย InputHoldBegin() -> ได้ผลเหมือนผู้เล่นกดปุ่มทุกประการ
+-- การเก็บจริงทำผ่าน ProximityPrompt ที่เกมแปะไว้ และ callback ของมันปิด UUID ไว้ข้างใน
+--   (OreUtils.lua:59-74) เรียก callback นั้นได้ด้วย InputHoldBegin()
+--     (ProximityPrompt ไม่มี :Fire() มีแค่ InputHoldBegin/InputHoldEnd)
+--   แล้วมันจะทำงานครบวงจร:
+--       ตรวจกระเป๋าว่าเต็มไหม -> FlyToPlayer -> UpdateOrePack(count+1)
+--       -> PickupOreBE:Fire() -> GetOreRF:InvokeServer(uuid) ให้เซิร์ฟเวอร์จองของ
+-- UUID อยู่ในตารางภายในของ OreDropUtils อ่านตรง ๆ ไม่ได้ แต่ไม่ต้องรู้ก็ได้
+--
+-- สัญญาณว่าเกมรับของแล้ว: FlyToPlayer สั่ง prompt.Enabled = false ทันทีที่ถูกเก็บ
+--   (OreDropUtils.lua:157-159) ส่วนตัวโมเดลถูกทำลายหลังจากนั้นอีก 3 วิตอนลอยเข้าตัว
+--   ถ้ากระเป๋าเต็ม prompt จะยัง Enabled อยู่ เพราะ callback ของเกม return ออกก่อน
+--   -> ใช้สัญญาณนี้แทนการอ่าน HUD ได้เลย ไม่ต้องพึ่งขนาดกระเป๋า
 local function collectOres()
     local cache = getOreCache()
     if not cache then return 0, 0 end
@@ -316,35 +357,40 @@ local function collectOres()
 
     -- 2) เก็บทีละชิ้นจากแพงสุด หยุดทันทีที่กระเป๋าเต็ม
     --    ถ้ากระเป๋าพอทั้งหมดจะเก็บครบทุกชิ้นเท่ากัน
-    local taken = 0
+    local taken, noPrompt = 0, 0
     for _, ore in ipairs(ores) do
-        local cur, max = getPack()
-        if not cur then
-            -- อ่าน HUD ไม่ได้ = ยังไม่มีเกมครบภาพหรือผิดโครงสร้าง
-            -- อย่าเดา ถ้าอ่านไม่ได้ก็เก็บไม่ได้ (กด prompt แล้วก็เต็มอยู่ดี)
-            break
-        end
-        if cur >= max then break end
+        local prompt = findOrePrompt(ore)
+        if not prompt then
+            noPrompt = noPrompt + 1
+        elseif prompt.Enabled then
+            firePrompt(prompt)
 
-        local primary = ore.PrimaryPart
-        local prompt = primary and primary:FindFirstChildOfClass("ProximityPrompt")
-        if prompt and prompt.Enabled then
-            -- เกมตั้ง HoldDuration = 0.5 วิ (OreDropUtils.lua:134) รอให้เลย
-            pcall(function() prompt:InputHoldBegin() end)
-
-            -- รอจนกว่า HUD นับขึ้น 1 ชิ้น หรือ timeout
-            local waited = 0
+            -- รอจนกว่าเกมจะปิด prompt = รับ callback แล้ว
+            -- ถ้ายังไม่มีอะไรเกิดขึ้นใน 0.7 วิ แปลว่าวิธีแรกไม่ได้ผล
+            --   (เช่น :Fire() มีอยู่แต่ไม่ trigger) ให้ล้างทางที่จำไว้แล้วลองใหม่
+            local waited, retried = 0, false
             while waited < 2 do
                 task.wait(0.1)
                 waited = waited + 0.1
-                local now = getPack()
-                if not now then break end
-                if now > cur then
+                if not prompt.Enabled or not ore.Parent then
                     taken = taken + 1
                     break
                 end
+                if not retried and waited >= 0.7 then
+                    retried = true
+                    promptMethod = nil
+                    firePrompt(prompt)
+                end
             end
         end
+    end
+    if noPrompt > 0 then
+        print("[Auto Farm] หา ProximityPrompt ไม่เจอ " .. noPrompt .. " ชิ้น")
+    end
+    if promptMethod then
+        print("[Auto Farm] ยิง ProximityPrompt ด้วย :" .. promptMethod .. "() ได้ผล")
+    else
+        print("[Auto Farm] ยิง ProximityPrompt ไม่ได้เลย (ไม่มีเมธอดที่ใช้ได้)")
     end
     return taken, #ores
 end
