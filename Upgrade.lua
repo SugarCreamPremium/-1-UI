@@ -1,4 +1,4 @@
--- Version 1.00
+-- Version 1.41
 -- แถบ Upgrade (อัปเกรดอัตโนมัติ)
 --
 -- กลไกของเกมที่ใช้ (อ่านจากดัมป์):
@@ -261,6 +261,20 @@ local function updateLabel()
     pcall(function() label.ParagraphFrame:SetDesc(text) end)
 end
 
+-- รีเฟรชข้อมูลทุก 2 วิ ไม่ต้องกดเอง
+--   ปกติเลเวลจะมากับ UpdateDataRE อยู่แล้ว รอบนี้เป็นตาข่ายนิรภัย
+--   กันกรณี push ตกหล่น แล้วเลเวลที่แคชไว้จะค้างทำให้คิดราคาผิด
+--   ทำงานตลอดอายุโมดูล ไม่ว่าจะเปิดอัปอัตโนมัติหรือไม่ก็ตาม
+local REFRESH_EVERY = 2
+
+local function statusLoop()
+    while true do
+        refreshLevels()
+        updateLabel()
+        task.wait(REFRESH_EVERY)
+    end
+end
+
 local function autoLoop()
     refreshLevels()
     while autoEnabled do
@@ -291,21 +305,13 @@ end
 -- ============================================
 function Upgrade.register(context)
     local tab = context.Tab
-    local WindUI = context.WindUI
     if not tab then return end
-
-    local function notify(title, desc)
-        if not WindUI then return end
-        pcall(function()
-            WindUI:Notify({Title = title, Content = desc, Duration = 3})
-        end)
-    end
 
     local section = tab:Section({Title = "อัปเกรดอัตโนมัติ", Opened = true})
     if section then
         section:Toggle({
             Title = "เปิดอัปเกรดอัตโนมัติ",
-            Desc = "อัปทีละเลเวลไปเรื่อย ๆ ตราบใดที่เงินพอ (เลเวล 3 สถิติ) เงินไม่พอก็รอ",
+            Desc = "อัปทีละเลเวลไปเรื่อยๆ",
             Value = false,
             Callback = setAuto,
         })
@@ -315,27 +321,6 @@ function Upgrade.register(context)
             Desc = "กำลังอ่านข้อมูล...",
         })
         label = status
-
-        section:Button({
-            Title = "อัปทีเดียว (ตามที่จ่ายได้)",
-            Desc = "อัปแต่ละสถิติไป 1 ครั้ง ถ้าเงินพอ แล้วหยุด",
-            Callback = function()
-                refreshLevels()
-                local bought = autoPass()
-                updateLabel()
-                notify("อัปเสร็จ", bought > 0 and ("อัปได้ " .. bought .. " ครั้ง") or "เงินไม่พอ หรืออัปครบแล้ว")
-            end,
-        })
-
-        section:Button({
-            Title = "รีเฟรชข้อมูล",
-            Desc = "อ่านเลเวลและเงินใหม่จากเซิร์ฟเวอร์",
-            Callback = function()
-                refreshLevels()
-                updateLabel()
-                notify("รีเฟรชแล้ว", "อัปเกรดอัตโนมัติ: " .. (autoEnabled and "เปิดอยู่" or "ปิดอยู่"))
-            end,
-        })
     end
 
     local pick = tab:Section({Title = "เลือกว่าจะอัพตัวไหน", Opened = true})
@@ -348,20 +333,20 @@ function Upgrade.register(context)
         })
         pick:Toggle({
             Title = "โชค (Luck)",
-            Desc = "โอกาสดรอปของแร่และคริติก",
+            Desc = "เพิ่มโอกาสดรอปของ",
             Value = true,
             Callback = function(value) statEnabled.Luck = value == true end,
         })
         pick:Toggle({
             Title = "ขนาดกระเป๋า (OrePack)",
-            Desc = "เก็บของได้มากขึ้นต่อรอบ",
+            Desc = "กระเป๋าเก็บแรร์",
             Value = true,
             Callback = function(value) statEnabled.OrePack = value == true end,
         })
     end
 
-    refreshLevels()
-    updateLabel()
+    -- รีเฟรชทุก 2 วิตลอดอายุโมดูล ไม่ต้องกดปุ่ม
+    task.spawn(statusLoop)
 end
 
 return Upgrade
