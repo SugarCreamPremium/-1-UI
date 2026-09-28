@@ -1,4 +1,4 @@
--- Version 12.36
+-- Version 12.46
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจร: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
@@ -281,7 +281,7 @@ end
 --                      (OreDropUtils.lua:132 MaxIndicatorDistance = 10)
 --
 --   ถ้า executor ไม่มีตัวนี้ ค่อยใช้วิธีกดค้างจริงแบบเดียวกับ MainScript.lua:2462-2467
-local promptMethod = "fireproximityprompt"
+-- fireError เก็บ error ครั้งแรกไว้ เพื่อให้ collectOres เลิกยิงต่อทันทีที่พัง
 local fireError = nil
 
 local function firePrompt(prompt)
@@ -289,7 +289,6 @@ local function firePrompt(prompt)
         local ok, err = pcall(fireproximityprompt, prompt, 0, true)
         if not ok and not fireError then
             fireError = tostring(err)
-            print("[Auto Farm] fireproximityprompt error -> " .. fireError)
         end
         return ok
     end
@@ -302,9 +301,7 @@ local function firePrompt(prompt)
         prompt:InputHoldEnd()
     end)
     if not ok and not fireError then
-        promptMethod = "InputHoldBegin"
         fireError = tostring(err)
-        print("[Auto Farm] executor ไม่มี fireproximityprompt -> ใช้ InputHoldBegin แทน")
     end
     return ok
 end
@@ -370,7 +367,7 @@ end
 --   -> ใช้สัญญาณนี้แทนการอ่าน HUD ได้เลย ไม่ต้องพึ่งขนาดกระเป๋า
 local function collectOres()
     local cache = getOreCache()
-    if not cache then return 0, 0 end
+    if not cache then return end
 
     -- 1) รวบรวมแร่ที่ตกอยู่ แล้วเรียงจากราคาแพงสุดไปถูกสุด
     --    ของที่ไม่ใช่แร่ (เช่นก้อนเสริม) ชื่อไม่ตรง Ore_ตัวเลข -> ข้ามไป
@@ -381,7 +378,7 @@ local function collectOres()
             ores[#ores + 1] = model
         end
     end
-    if #ores == 0 then return 0, 0 end
+    if #ores == 0 then return end
 
     table.sort(ores, function(a, b)
         return getOrePrice(a.Name) > getOrePrice(b.Name)
@@ -389,37 +386,17 @@ local function collectOres()
 
     -- 2) เก็บทีละชิ้นจากแพงสุด หยุดทันทีที่กระเป๋าเต็ม
     --    ถ้ากระเป๋าพอทั้งหมดจะเก็บครบทุกชิ้นเท่ากัน
-    local taken, noPrompt = 0, 0
-    local loggedPath = false
     for _, ore in ipairs(ores) do
         local prompt = findOrePrompt(ore)
-        if not prompt then
-            noPrompt = noPrompt + 1
-        elseif prompt.Enabled then
-            -- พิสูจน์ path จริงที่หาเจอ ครั้งเดียวต่อรอบ
-            if not loggedPath then
-                loggedPath = true
-                print("[Auto Farm] path: " .. prompt:GetFullName())
-            end
-            if fireAndWait(prompt, ore) then
-                taken = taken + 1
-            end
+        if prompt and prompt.Enabled then
+            fireAndWait(prompt, ore)
             if fireError then
                 -- ยิงไม่ขึ้น = วิธีที่มีใช้ไม่ได้ ไม่ต้องรอ 1.5 วิ ให้ครบทุกชิ้นแล้ว
-                -- ตัวนับ taken ข้างบนคือผลจริง ปล่อยให้รอบนี้จบเร็วแล้วไปรอบต่อไป
+                -- ปล่อยให้รอบนี้จบเร็วแล้วไปรอบต่อไป
                 break
             end
         end
     end
-    if noPrompt > 0 then
-        print("[Auto Farm] หา ProximityPrompt ไม่เจอ " .. noPrompt .. " ชิ้น")
-    end
-    if fireError then
-        print("[Auto Farm] ยิง ProximityPrompt ไม่ขึ้น (" .. promptMethod .. ") -> เก็บได้ 0 ชิ้น")
-    else
-        print("[Auto Farm] ยิง ProximityPrompt ด้วย " .. promptMethod .. " ได้ผล")
-    end
-    return taken, #ores
 end
 
 -- ============================================
@@ -442,10 +419,6 @@ end
 -- หนึ่งรอบของการฟาร์ม คืนทุกทางที่ "รอบนี้ไม่สำเร็จ"
 -- แยกจาก farmLoop เพื่อใช้ return แทน continue (continue เป็นคีย์เวิร์ดเฉพาะ Luau)
 local function runRound()
-    local function log(msg)
-        print("[Auto Farm] " .. msg)
-    end
-
     -- 1) รอจนฟื้นฟู (ถ้าตายอยู่ ไม่ต้องทำอะไรรอบนี้)
     if player:GetAttribute("Dead") then
         waitUntil(function() return not player:GetAttribute("Dead") end, 30)
@@ -461,18 +434,15 @@ local function runRound()
     --    ส่ง skipWarp = true เพื่อไม่ให้โดนวาร์ปกลับจุดเกิดตรงนี้
     --    เพราะเรากำลังจะวาร์ปไปสเตจอยู่ดี
     if player:GetAttribute("IntoFight") then
-        log("ออกจากสเตจเดิมก่อน")
         exitFight(true, true)
         task.wait(1.5)
     end
 
     -- 4) วาร์ปไปที่สเตจที่เลือก
     if not warpToStage(selectedStage) then
-        log("วาร์ปไม่ได้ (แมปยังไม่โหลด?) -> รอ 1 วิ")
         task.wait(1)
     end
     task.wait(0.4)
-    log("วาร์ปไป " .. tostring(selectedStage))
 
     -- 5) เข้าสเตจ
     enterStage(selectedStage)
@@ -481,14 +451,12 @@ local function runRound()
     --    ถ้าไม่มีมอนเกิด = สเตจนี้เล่นไม่ได้ เช่น ยังไม่ปลดล็อก
     --    (CreateStageEnemys จะเตือน "缺少敌人点位" แล้ว return ถ้าไม่มี EnemyPoint)
     if not waitUntil(function() return countEnemies() > 0 end, 10) then
-        log("ไม่มีมอนเกิดที่ " .. tostring(selectedStage) .. " (ยังไม่ปลด หรือชื่อผิด?)")
         if player:GetAttribute("IntoFight") then
             exitFight(false, true)
         end
         task.wait(2)
         return
     end
-    log("มอนเกิด " .. countEnemies() .. " ตัว")
 
     -- 7) ฆ่ามอนวนจนของเริ่มตก = สเตจจบแล้ว
     --    ต้องยิงไปเรื่อย ๆ ไม่ใช่ยิงรอบเดียว เพราะ FinishStage
@@ -511,18 +479,15 @@ local function runRound()
     if not done then
         -- hit == 0 = มอนตายแล้วแต่ของไม่ตก = เซิร์ฟเวอร์ไม่ยอมให้ของ
         -- hit > 0  = ยิงไม่เข้า = EnemyTab ถูกล้าง หรือ UUID ไม่ตรง
-        log("ฆ่าไม่จบ (ยิงไป " .. hit .. " ครั้ง) ของไม่ตก")
         if player:GetAttribute("IntoFight") then
             exitFight(false, false)
         end
         task.wait(2)
         return
     end
-    log("ฆ่าครบ (ยิง " .. hit .. " ครั้ง) ของตกแล้ว")
 
     -- 8) เก็บของ: แพงสุดก่อน จนกว่ากระเป๋าจะเต็ม (หรือเก็บครบถ้าพอ)
-    local taken, total = collectOres()
-    log("เก็บของได้ " .. taken .. " / " .. total .. " ชิ้น")
+    collectOres()
     task.wait(0.5)
 
     -- 9) ออกจากสเตจ -> ExitFight เก็บของที่เหลือให้เอง แล้ววาร์ปกลับจุดเกิด
@@ -530,7 +495,6 @@ local function runRound()
     if player:GetAttribute("IntoFight") then
         exitFight(true, false)
     end
-    log("กลับจุดเกิดแล้ว")
 
     -- 10) หน่วง 3 วิ ก่อนเริ่มรอบใหม่
     task.wait(3)
@@ -612,7 +576,7 @@ function AutoFarm.register(context)
     section:Toggle({
         Title = "เริ่ม Auto Farm",
         Desc = "หยุดกลางคันได้ แต่ถ้าหยุดตอนกำลังอยู่ในสเตจ ตัวละครจะยังอยู่ในนั้น "
-            .. "กดปุ่มกลับ (Return) เองถ้าจะออก",
+            .. "กดปุ่มกลับ (Back) เองถ้าจะออก",
         Value = false,
         Callback = function(value)
             if value then
