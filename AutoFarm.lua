@@ -1,4 +1,4 @@
--- Version 10.31
+-- Version 10.45
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจร: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
@@ -166,7 +166,7 @@ end
 local function enterStage(stageName)
     if player:GetAttribute("IntoFight") then
         -- ค้างอยู่ในสเตจอื่นอยู่ -> ออกก่อน
-        ExitFightBE.Event:Fire(true)
+        ExitFightBE:Fire(true)
         task.wait(1.5)
     end
     player:SetAttribute("StageID", nil)
@@ -195,7 +195,7 @@ local function killAllEnemies()
             -- ต้องส่ง 3 อาร์กิวเมนต์: SuperLootManager.client.lua:78 ทำ p3.Damage = ...
             -- ถ้าส่งแค่ 2 จะ error ตรงนั้น
             pcall(function()
-                EnemyHitBE.Event:Fire(enemy.Name, damage, {
+                EnemyHitBE:Fire(enemy.Name, damage, {
                     SkillID = "K_ATK_1",
                     IsCrit = false,
                     Damage = damage,
@@ -273,16 +273,16 @@ local function runRound()
     end
 
     if not done then
-        -- hit == 0 = มอนไม่เกิดเลย (สตา��ต์ยังไม่ปลด หรือเข้าไม่ได้)
-        -- hit > 0 = ฆ่าแล้วแต่ของไม่ตก = เซิร์ฟเวอร์ไม่ยอมให้ของสตา��ต์นี้
-        ExitFightBE.Event:Fire(true)
+        -- hit == 0 = มอนไม่เกิดเลย (สแตจยังไม่ปลด หรือเข้าไม่ได้)
+        -- hit > 0 = ฆ่าแล้วแต่ของไม่ตก = เซิร์ฟเวอร์ไม่ยอมให้ของของสแตจนี้
+        ExitFightBE:Fire(true)
         task.wait(2)
         return
     end
 
     -- 7) เก็บของ + กลับจุดเกิด
     task.wait(0.5)
-    ExitFightBE.Event:Fire(true)
+    ExitFightBE:Fire(true)
     task.wait(roundDelay)
 end
 
