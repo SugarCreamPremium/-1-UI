@@ -1,4 +1,4 @@
--- Version 12.06
+-- Version 12.32
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจร: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
@@ -263,23 +263,26 @@ end
 -- ============================================
 -- ยิง ProximityPrompt
 -- ============================================
--- executor เติม :Fire() ให้ instance ใน runtime ซึ่งเอกสาร Roblox ไม่บันทึกไว้
---   (create.roblox.com ระบุแค่ InputHoldBegin/InputHoldEnd เป็นเมธอดของ ProximityPrompt)
---   ทดสอบกับ Infinite Yield แล้ว :Fire() เก็บของได้ทันทีทุกระยะ ไม่ต้องเข้าใกล้
---   จึงใช้เป็นทางหลัก และเก็บ InputHoldBegin ไว้เป็นทางสำรอง
---     ถ้า executor ไม่มีเมธอดนี้ (pcall จับ error ได้)
-local promptMethod = nil
+-- path ที่ยืนยันแล้ว: workspace.OreCache.Ore_47.MAIN.ProximityPrompt
+--   ตรวจจาก Assets/Ore ทั้ง 48 แบบ -> PrimaryPart ชื่อ "MAIN" ทั้งหมด
+--   และ MAIN ใน asset ไม่มี ProximityPrompt ติดมา -> ตัวที่เจอในเกมชิ้นเดียว
+--   ที่เกมสร้างตอนรันด้วย Instance.new("ProximityPrompt", Model.PrimaryPart)
+--     (OreDropUtils.lua:123)
+--
+-- วิธียิง: :Fire() เหมือนที่ Infinite Yield ใช้ และใช้วิธีนี้อย่างเดียว
+--   ไม่มี fallback เป็น InputHoldBegin ถ้าเรียกไม่ได้จะพิมพ์ error ออกมาให้เห็น
+--   แทนที่จะสลับไปเรียกวิธีอื่นเงียบ ๆ แล้วเข้าใจผิดว่า Fire ใช้ได้
+local promptMethod = "Fire"
+local fireError = nil
 
 local function firePrompt(prompt)
-    if pcall(function() prompt:Fire() end) then
-        promptMethod = "Fire"
-        return true
+    local ok, err = pcall(function() prompt:Fire() end)
+    if not ok and not fireError then
+        -- พิมพ์ครั้งเดียว ไม่ต้องรกทุกชิ้น
+        fireError = tostring(err)
+        print("[Auto Farm] prompt:Fire() ใช้ไม่ได้ -> " .. fireError)
     end
-    if pcall(function() prompt:InputHoldBegin() end) then
-        promptMethod = "InputHoldBegin"
-        return true
-    end
-    return false
+    return ok
 end
 
 -- ยิงแล้วรอจนกว่าเกมจะรับ -> คืน true ถ้าได้ของ
@@ -288,8 +291,7 @@ end
 --   ของเกม return ออกก่อน -> ใช้สัญญาณนี้แทนการอ่าน HUD ได้เลย
 local function fireAndWait(prompt, ore)
     firePrompt(prompt)
-    -- :Fire() ทำงานทันที ไม่ต้องรอ HoldDuration 0.5 วิ ของเกม
-    --   เช็คก่อนรอเลย เก็บได้เร็วกว่ามาก
+    -- callback ของเกมยังต้องทำงานจนเสร็จ จึงต้องรอสัญญาณ ไม่ใช่ยิงทิ้งเลย
     if not prompt.Enabled or not ore.Parent then return true end
 
     local waited = 0
@@ -302,11 +304,10 @@ local function fireAndWait(prompt, ore)
 end
 
 -- หา ProximityPrompt ของแร่ 1 ชิ้น
---   โครงสร้างจริง: workspace.OreCache.Ore_47.MAIN.ProximityPrompt
---   เกมสร้างด้วย Instance.new("ProximityPrompt", Model.PrimaryPart) (OreDropUtils.lua:123)
---     แต่ PrimaryPart ของ clone ที่ได้มาอาจไม่ใช่ตัว MAIN ที่ prompt ติดอยู่จริง
---     ถ้าอ่านแค่ PrimaryPart แล้วมันไม่ใช่ตัวนั้น ก็จะหา prompt ไม่เจอเลย
---   เลยไล่จาก MainPart -> MAIN -> Main -> ทั้งโมเดล ตามลำดับ
+--   path ที่ยืนยันแล้ว: workspace.OreCache.Ore_47.MAIN.ProximityPrompt
+--     ตรวจจาก Assets/Ore ทั้ง 48 แบบ -> PrimaryPart ชื่อ "MAIN" ทั้งหมด
+--     และ MAIN ใน asset ไม่มี prompt ติดมา -> ตัวที่เจอมีชิ้นเดียว
+--   ไล่จาก PrimaryPart -> MAIN -> Main -> ทั้งโมเดล กันโครงสร้างเปลี่ยน
 local function findOrePrompt(ore)
     local primary = ore.PrimaryPart
     if primary then
@@ -379,15 +380,20 @@ local function collectOres()
             if fireAndWait(prompt, ore) then
                 taken = taken + 1
             end
+            if fireError then
+                -- Fire ใช้ไม่ได้ = วิธีเดียวที่สั่งให้ใช้ ไม่ต้องรอ 1.5 วิ ให้ครบทุกชิ้นแล้ว
+                -- ตัวนับ taken ข้างบนคือผลจริง ปล่อยให้รอบนี้จบเร็วแล้วไปรอบต่อไป
+                break
+            end
         end
     end
     if noPrompt > 0 then
         print("[Auto Farm] หา ProximityPrompt ไม่เจอ " .. noPrompt .. " ชิ้น")
     end
-    if promptMethod then
-        print("[Auto Farm] ยิง ProximityPrompt ด้วย :" .. promptMethod .. "() ได้ผล")
+    if fireError then
+        print("[Auto Farm] :Fire() ไม่มีเมธอดนี้บน ProximityPrompt -> ไม่มีทางเก็บของ")
     else
-        print("[Auto Farm] ยิง ProximityPrompt ไม่ได้เลย (ไม่มีเมธอดที่ใช้ได้)")
+        print("[Auto Farm] ยิง ProximityPrompt ด้วย :" .. promptMethod .. "() ได้ผล")
     end
     return taken, #ores
 end
