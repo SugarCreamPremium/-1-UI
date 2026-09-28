@@ -1,4 +1,4 @@
--- Version 1.44
+-- Version 1.50
 -- แถบ Upgrade (อัปเกรดอัตโนมัติ)
 --
 -- กลไกของเกมที่ใช้ (อ่านจากดัมป์):
@@ -361,7 +361,7 @@ function Upgrade.register(context)
         })
         pick:Toggle({
             Title = "ขนาดกระเป๋า (OrePack)",
-            Desc = "กระเป๋าเก็บแรร์",
+            Desc = "กระเป๋าเก็บแร่",
             Value = true,
             Callback = function(value) statEnabled.OrePack = value == true end,
         })
