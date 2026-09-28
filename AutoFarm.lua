@@ -1,4 +1,4 @@
--- Version 11.29
+-- Version 11.36
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจร: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
@@ -293,6 +293,23 @@ local function firePrompt(prompt)
     return false
 end
 
+-- ลองอีกทางหนึ่ง ใช้ตอนวิธีแรกไม่ได้ผล
+--   ต้อง "สลับ" ไปเรียกตัวที่ยังไม่ได้ลอง ไม่ใช่ล้าง promptMethod เป็น nil
+--   เพราะถ้าล้างเป็น nil firePrompt จะเริ่มจาก Fire อีกครั้งเสมอ
+--   แล้ว InputHoldBegin จะไม่มีโอกาสถูกลองเลย (retry เป็น no-op)
+local function firePromptAlt(prompt)
+    if promptMethod == "Fire" then
+        promptMethod = "InputHoldBegin"
+        if pcall(function() prompt:InputHoldBegin() end) then return true end
+    elseif promptMethod == "InputHoldBegin" then
+        promptMethod = "Fire"
+        if pcall(function() prompt:Fire() end) then return true end
+    end
+    -- ทั้งสองทางไม่มีเมธอดที่เรียกได้เลย -> ล้างให้รอบหน้าลองใหม่
+    promptMethod = nil
+    return firePrompt(prompt)
+end
+
 -- หา ProximityPrompt ของแร่ 1 ชิ้น
 --   โครงสร้างจริง: workspace.OreCache.Ore_47.MAIN.ProximityPrompt
 --   เกมสร้างด้วย Instance.new("ProximityPrompt", Model.PrimaryPart) (OreDropUtils.lua:123)
@@ -325,8 +342,7 @@ end
 --   (OreDropUtils.lua:55-65)
 --
 -- การเก็บจริงทำผ่าน ProximityPrompt ที่เกมแปะไว้ และ callback ของมันปิด UUID ไว้ข้างใน
---   (OreUtils.lua:59-74) เรียก callback นั้นได้ด้วย InputHoldBegin()
---     (ProximityPrompt ไม่มี :Fire() มีแค่ InputHoldBegin/InputHoldEnd)
+--   (OreUtils.lua:59-74) เรียก callback นั้นได้ด้วย firePrompt ด้านบน
 --   แล้วมันจะทำงานครบวงจร:
 --       ตรวจกระเป๋าว่าเต็มไหม -> FlyToPlayer -> UpdateOrePack(count+1)
 --       -> PickupOreBE:Fire() -> GetOreRF:InvokeServer(uuid) ให้เซิร์ฟเวอร์จองของ
@@ -378,8 +394,7 @@ local function collectOres()
                 end
                 if not retried and waited >= 0.7 then
                     retried = true
-                    promptMethod = nil
-                    firePrompt(prompt)
+                    firePromptAlt(prompt)
                 end
             end
         end
