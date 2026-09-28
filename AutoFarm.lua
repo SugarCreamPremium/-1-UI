@@ -1,4 +1,4 @@
--- Version 10.30
+-- Version 10.31
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจร: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
@@ -254,18 +254,27 @@ local function runRound()
     -- 4) เข้าสเตจ
     enterStage(selectedStage)
 
-    -- 5) รอมอนเกิด
-    if not waitUntil(function() return killAllEnemies() > 0 end, 10) then
-        -- ไม่มีมอนเกิด = อาจติดล็อกเลเวล หรือ InvokeServer ของ StageFinishedRF ไม่ผ่าน
-        task.wait(2)
-        return
+    -- 5) ฆ่ามอนวนจนของเริ่มตก = สเตจจบแล้ว
+    --    ต้องยิงไปเรื่อย ๆ ไม่ใช่ยิงรอบเดียว เพราะ FinishStage
+    --    จะสร้างของต่อเมื่อทุกตัวใน EnemyTab ตายครบเท่านั้น
+    --    (ยิงครั้งเดียวแล้วไปรอของ = ค้างจน timeout เพราะมอนที่เหลือยังไม่ตาย)
+    --    timeout 60 วิ เผื่อเซิร์ฟเวอร์ไม่ยอมให้ของ (StageUtils.FinishStage
+    --    จะค้างที่ repeat task.wait() until FinishedOreTab ถ้าเซิร์ฟไม่ตอบ)
+    local hit, done, waited = 0, false, 0
+    local TIMEOUT = 60
+    while running and waited < TIMEOUT do
+        hit = hit + killAllEnemies()
+        if stageDone() then
+            done = true
+            break
+        end
+        task.wait(0.2)
+        waited = waited + 0.2
     end
 
-    -- 6) ฆ่าวนจนของเริ่มตก = สเตจจบแล้ว
-    --    timeout 45 วิ เผื่อเซิร์ฟเวอร์ไม่ยอมให้ของ (StageUtils.FinishStage
-    --    จะค้างที่ repeat task.wait() until FinishedOreTab ถ้าเซิร์ฟไม่ตอบ)
-    if not waitUntil(stageDone, 45, 0.3) then
-        -- จบด้วย timeout -> ออกให้สะอาดแล้วลองรอบใหม่
+    if not done then
+        -- hit == 0 = มอนไม่เกิดเลย (สตา��ต์ยังไม่ปลด หรือเข้าไม่ได้)
+        -- hit > 0 = ฆ่าแล้วแต่ของไม่ตก = เซิร์ฟเวอร์ไม่ยอมให้ของสตา��ต์นี้
         ExitFightBE.Event:Fire(true)
         task.wait(2)
         return
