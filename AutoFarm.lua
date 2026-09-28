@@ -1,4 +1,4 @@
--- Version 12.46
+-- Version 1.31
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจร: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
@@ -347,6 +347,29 @@ local function findOrePrompt(ore)
     return nil
 end
 
+-- อ่านจำนวนของในกระเป๋า / ขนาดกระเป๋า -> count, max
+-- ============================================
+-- ตัวเลขจริงอยู่ในตัวแปร module-local ของ LeftInfoGUI (u66) อ่านตรง ๆ ไม่ได้
+--   (LeftInfoGUI.lua:64  UpdateOrePack เป็นคนเขียน u66 แล้วเอาไปแสดงที่ HUD)
+--   จึงต้องอ่านจาก HUD ที่เกมวาดไว้ คือ
+--       PlayerGui.Hud.LeftInfos.OrePack.Title.Text  =  "3/4"
+--   (LeftInfoGUI.lua:76  Title.Text = ("%*/%*"):format(count, max))
+--   ตัวเลขทั้งสองเป็นจำนวนเต็มเล็ก ๆ (สูงสุด 16) จึงไม่ถูกย่อด้วย AbbreviateNumber
+--   เหมือนของ coin ที่ใช้ AbbreviateNumber ต่างกัน
+local function getPack()
+    local gui = player:FindFirstChild("PlayerGui")
+    local hud = gui and gui:FindFirstChild("Hud")
+    local infos = hud and hud:FindFirstChild("LeftInfos")
+    local pack = infos and infos:FindFirstChild("OrePack")
+    local title = pack and pack:FindFirstChild("Title")
+    if not title or not title:IsA("TextLabel") and not title:IsA("TextButton") then
+        return nil, nil
+    end
+    local count, max = tostring(title.Text):match("^(%d+)%s*/%s*(%d+)$")
+    if not count then return nil, nil end
+    return tonumber(count), tonumber(max)
+end
+
 -- ============================================
 -- เก็บของ
 -- ============================================
@@ -361,10 +384,10 @@ end
 --       -> PickupOreBE:Fire() -> GetOreRF:InvokeServer(uuid) ให้เซิร์ฟเวอร์จองของ
 -- UUID อยู่ในตารางภายในของ OreDropUtils อ่านตรง ๆ ไม่ได้ แต่ไม่ต้องรู้ก็ได้
 --
--- สัญญาณว่าเกมรับของแล้ว: FlyToPlayer สั่ง prompt.Enabled = false ทันทีที่ถูกเก็บ
---   (OreDropUtils.lua:157-159) ส่วนตัวโมเดลถูกทำลายหลังจากนั้นอีก 3 วิตอนลอยเข้าตัว
---   ถ้ากระเป๋าเต็ม prompt จะยัง Enabled อยู่ เพราะ callback ของเกม return ออกก่อน
---   -> ใช้สัญญาณนี้แทนการอ่าน HUD ได้เลย ไม่ต้องพึ่งขนาดกระเป๋า
+-- กระเป๋าเต็ม = callback ของเกม return ออกก่อน ไม่ได้ไปแตะ FlyToPlayer
+--   (OreUtils.lua:62-66  if UpgradeData.GetMaxNum("OrePack") <= v1 then ... return end)
+--   แปลว่า prompt ยัง Enabled อยู่ = ยิงซ้ำก็ไม่มีอะไรเกิดขึ้น
+--   -> ต้องเช็คจำนวนในกระเป๋าก่อนยิงทุกชิ้น ไม่งั้นจะยิงเปล่า 1.5 วิ ทีละชิ้นจนครบ
 local function collectOres()
     local cache = getOreCache()
     if not cache then return end
@@ -387,6 +410,10 @@ local function collectOres()
     -- 2) เก็บทีละชิ้นจากแพงสุด หยุดทันทีที่กระเป๋าเต็ม
     --    ถ้ากระเป๋าพอทั้งหมดจะเก็บครบทุกชิ้นเท่ากัน
     for _, ore in ipairs(ores) do
+        -- กระเป๋าเต็มแล้ว -> เก็บต่อไม่ได้อยู่ดี ให้ข้ามไป เกมจะจัดการที่เหลือตอน ExitFight
+        local count, max = getPack()
+        if count and max and count >= max then break end
+
         local prompt = findOrePrompt(ore)
         if prompt and prompt.Enabled then
             fireAndWait(prompt, ore)
