@@ -1,4 +1,4 @@
--- Version 1.41
+-- Version 1.44
 -- แถบ Upgrade (อัปเกรดอัตโนมัติ)
 --
 -- กลไกของเกมที่ใช้ (อ่านจากดัมป์):
@@ -240,22 +240,44 @@ local function autoPass()
     return bought
 end
 
+-- ย่อเลขให้สั้นลง เหลือที่เหลือเป็นหนึ่งหลัก
+--   ราคาของเลเวลบนสุดไปถึง 1.55 พันล้าน ถ้าเขียนเต็มบรรทัดจะยาวเกินกรอบแล้วถูกตัด
+local function fmt(n)
+    if not n then return "?" end
+    n = math.floor(n)
+    local abs = math.abs(n)
+    if abs >= 1e9 then
+        return string.format("%.2fB", n / 1e9)
+    end
+    if abs >= 1e6 then
+        return string.format("%.2fM", n / 1e6)
+    end
+    if abs >= 1e3 then
+        return string.format("%.1fK", n / 1e3)
+    end
+    return tostring(n)
+end
+
 local function updateLabel()
     if not label then return end
-    local coin = getCoin()
+
+    -- แยกทีละบรรทัด อย่ายัดไว้บรรทัดเดียว ไม่งั้นข้อความยาวเกินแล้วโดนตัดทิ้ง
     local parts = {}
+    local coin = getCoin()
+    if coin then
+        parts[#parts + 1] = "เหรียญ " .. fmt(coin)
+    end
     for _, name in ipairs(STATS) do
         local price = nextPrice(name)
+        local levelText = STAT_NAME[name] .. " Lv." .. getLevel(name)
         if price then
-            parts[#parts + 1] = STAT_NAME[name] .. " Lv." .. getLevel(name) .. " -> " .. price
+            parts[#parts + 1] = levelText .. " -> " .. fmt(price)
         else
-            parts[#parts + 1] = STAT_NAME[name] .. " Lv." .. getLevel(name) .. " (ตัน)"
+            parts[#parts + 1] = levelText .. " (ตัน)"
         end
     end
-    local text = table.concat(parts, "  |  ")
-    if coin then
-        text = "เหรียญ " .. tostring(math.floor(coin)) .. "\n" .. text
-    end
+
+    local text = table.concat(parts, "\n")
     label.Desc = text
     -- Paragraph ไม่มี SetValue แต่มี SetDesc ของตัวเฟรมข้างใน (components/window/Element.lua:482)
     pcall(function() label.ParagraphFrame:SetDesc(text) end)
