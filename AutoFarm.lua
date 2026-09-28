@@ -1,4 +1,4 @@
--- Version 1.38
+-- Version 1.40
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจร: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
@@ -191,8 +191,7 @@ end
 --    แล้วได้ inf ซึ่ง <= 0 เป็น false = มอนไม่ตาย)
 local function killAllEnemies()
     local folder = getEnemyFolder()
-    if not folder then return 0 end
-    local hit = 0
+    if not folder then return end
     for _, enemy in ipairs(folder:GetChildren()) do
         if enemy:IsA("Model") then
             local hp = enemy:FindFirstChild("HPValue")
@@ -210,10 +209,8 @@ local function killAllEnemies()
                     Damage = damage,
                 })
             end)
-            hit = hit + 1
         end
     end
-    return hit
 end
 
 -- มอนตายครบแล้วหรือยัง = ดูว่าของเริ่มตกบนพื้นหรือยัง
@@ -307,21 +304,18 @@ local function firePrompt(prompt)
 end
 
 -- ยิงแล้วรอจนกว่าเกมจะรับ -> คืน true ถ้าได้ของ
--- สัญญาณว่าเกมรับแล้ว: prompt ถูกปิด (เกมสั่งใน FlyToPlayer) หรือโมเดลถูกทำลาย
---   (OreDropUtils.lua:157-159) ถ้ากระเป๋าเต็ม prompt จะยัง Enabled เพราะ callback
---   ของเกม return ออกก่อน -> ใช้สัญญาณนี้แทนการอ่าน HUD ได้เลย
+-- สัญญาณว่าเกมรับของแล้ว: prompt ถูกปิด (เกมสั่งใน FlyToPlayer) หรือโมเดลถูกทำลาด
+--   (OreDropUtils.lua:157-159) ถ้ากระเป๋าเต็ม prompt จะยัง Enabled เพราะ callback ของเกม return ออกก่อน
+--   -> กระเป๋าเต็มต้องเช็คจาก getPack() ข้างบน ไม่ใช่รอสัญญาณตรงนี้
 local function fireAndWait(prompt, ore)
     firePrompt(prompt)
     -- callback ของเกมยังต้องทำงานจนเสร็จ จึงต้องรอสัญญาณ ไม่ใช่ยิงทิ้งเลย
-    if not prompt.Enabled or not ore.Parent then return true end
-
     local waited = 0
     while waited < 1.5 do
+        if not prompt.Enabled or not ore.Parent then return end
         task.wait(0.1)
         waited = waited + 0.1
-        if not prompt.Enabled or not ore.Parent then return true end
     end
-    return false
 end
 
 -- หา ProximityPrompt ของแร่ 1 ชิ้น
@@ -491,10 +485,10 @@ local function runRound()
     --    (ยิงครั้งเดียวแล้วไปรอของ = ค้างจน timeout เพราะมอนที่เหลือยังไม่ตาย)
     --    timeout 60 วิ เผื่อเซิร์ฟเวอร์ไม่ยอมให้ของ (StageUtils.FinishStage
     --    จะค้างที่ repeat task.wait() until FinishedOreTab ถ้าเซิร์ฟไม่ตอบ)
-    local hit, done, waited = 0, false, 0
+    local done, waited = false, 0
     local TIMEOUT = 60
     while running and waited < TIMEOUT do
-        hit = hit + killAllEnemies()
+        killAllEnemies()
         if stageDone() then
             done = true
             break
@@ -504,8 +498,7 @@ local function runRound()
     end
 
     if not done then
-        -- hit == 0 = มอนตายแล้วแต่ของไม่ตก = เซิร์ฟเวอร์ไม่ยอมให้ของ
-        -- hit > 0  = ยิงไม่เข้า = EnemyTab ถูกล้าง หรือ UUID ไม่ตรง
+        -- หมดเวลาแล้วของยังไม่ตก = เซิร์ฟเวอร์ไม่ยอมให้ของ หรือ EnemyTab ถูกล้างจนยิงไม่เข้า
         if player:GetAttribute("IntoFight") then
             exitFight(false, false)
         end
