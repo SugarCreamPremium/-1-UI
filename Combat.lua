@@ -1,4 +1,4 @@
--- Version 1.00
+-- Version 9.36
 -- หมวดต่อสู้
 local Combat = {}
 
@@ -93,14 +93,13 @@ function Combat.register(context)
     if section then
         section:Toggle({
             Title = "เซ็ต HP มอนสเตอร์เป็น 0",
-            Desc = "ตั้ง HPValue ใน workspace.EnemyFolder ทุกตัวเป็น 0 "
-                .. "มอนจะตายทันทีที่ถูกโจมตีครั้งถัดไป (ปิดแล้วมอนที่เหลือคงค่า 0 ไว้)",
+            Desc = "ตั้งเลือดมอนสเตอร์ทุกตัวเป็น 0 ตลอดเวลา",
             Value = false,
             Callback = setEnemyZero,
         })
         section:Button({
             Title = "เซ็ตครั้งเดียว",
-            Desc = "ทำหนึ่งรอบแล้วเลิด ไม่ต้องเปิดค้างไว้",
+            Desc = "ตั้งเลือดมอนสเตอร์ทุกตัวเป็น 0 แค่รอบเดียว",
             Callback = function()
                 local count = sweepEnemies()
                 notify("เซ็ต HP มอนสเตอร์แล้ว", "ตั้งเป็น 0 ให้ " .. count .. " ตัว")
