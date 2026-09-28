@@ -1,4 +1,4 @@
--- Version 10.45
+-- Version 11.07
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจร: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
@@ -216,12 +216,124 @@ local function stageDone()
 end
 
 -- ============================================
+-- ราคาขายของแร่ (Config/Ore/Config.lua)
+-- ============================================
+-- เกมแสดงราคาบน Billboard ของของแต่ละชิ้น (OreDropUtils.lua:98-104)
+--   -> ถ้าจะเก็บเรียงจากแพงสุด ต้องรู้ราคาจริง ซึ่งอยู่ใน ModuleScript ที่อ่านไม่ได้
+--   (require ไม่ได้ เหมือนที่อธิบายไว้ข้างบน)
+-- ตารางนี้คัดลอกค่า Price มาจาก Config/Ore/Config.lua ตรง ๆ
+--   และค่ามันเรียงจากน้อยไปมากตามเลข 8 .. 80000 พอดี
+--   ถ้าเจอแร่ที่ไม่รู้จัก ให้คิดเป็น 0 = ไปเก็บทีหลังสุด (ไม่ทำให้สติปั๊บ)
+local ORE_PRICE = {
+    [1] = 8, [2] = 14, [3] = 21, [4] = 35, [5] = 40, [6] = 55, [7] = 60,
+    [8] = 82, [9] = 125, [10] = 150, [11] = 175, [12] = 200, [13] = 225,
+    [14] = 777, [15] = 932, [16] = 1120, [17] = 1340, [18] = 1610, [19] = 1930,
+    [20] = 2320, [21] = 2780, [22] = 3531, [23] = 4823, [24] = 5524, [25] = 6120,
+    [26] = 6950, [27] = 7230, [28] = 7990, [29] = 8250, [30] = 9100, [31] = 11200,
+    [32] = 12528, [33] = 13420, [34] = 14555, [35] = 16230, [36] = 18800,
+    [37] = 21000, [38] = 23250, [39] = 25539, [40] = 27980, [41] = 30000,
+    [42] = 32420, [43] = 36732, [44] = 42000, [45] = 47000, [46] = 53200,
+    [47] = 60000, [48] = 80000,
+}
+
+local function getOrePrice(name)
+    return ORE_PRICE[tonumber(name:match("^Ore_(%d+)$"))] or 0
+end
+
+-- ============================================
+-- อ่านจำนวนของในกระเป๋า
+-- ============================================
+-- ตัวเลขนี้อยู่ใน LeftInfoGUI.lua:64-81 เป็นตัวแปร module-local (u66)
+--   อ่านจากข้างนอกไม่ได้ และ UpgradeData ก็เป็น ModuleScript เหมือนกัน
+-- ทางที่ใช้ได้คืออ่านจาก HUD ที่เกมวาดไว้ให้อยู่แล้ว
+--   PlayerGui.Hud.LeftInfos.OrePack.Title.Text = "3/4"
+-- ค่านี้ไม่ผ่าน AbbreviateNumber (LeftInfoGUI.lua:76) จึงเป็นเลขเต็มอ่านตรง ๆ ได้
+local function getPack()
+    local gui = player:FindFirstChildOfClass("PlayerGui")
+    local hud = gui and gui:FindFirstChild("Hud")
+    local left = hud and hud:FindFirstChild("LeftInfos")
+    local pack = left and left:FindFirstChild("OrePack")
+    local title = pack and pack:FindFirstChild("Title")
+    if not title or type(title.Text) ~= "string" then return nil end
+    local cur, max = title.Text:match("(%d+)/(%d+)")
+    if not cur or not max then return nil end
+    return tonumber(cur), tonumber(max)
+end
+
+-- ============================================
+-- เก็บของ
+-- ============================================
+-- เกมทิ้งแร่ไว้ใน workspace.OreCache แต่ละชิ้นคือ clone ของ Assets.Ore.<ID>
+--   ชื่อจึงเป็น "Ore_1".."Ore_48" เหมือนกันหมด ใช้ชื่อหา ID ได้เลย
+--   (OreDropUtils.lua:55-65)
+--
+-- การกดเก็บจริงทำผ่าน ProximityPrompt ที่เกมแปะไว้บน PrimaryPart
+--   OreUtils.lua:59-74 -> callback นี้ปิดค่า UUID ไว้ข้างใน แล้วทำงานนี้เรียงครบ:
+--       UpdateOrePack(count + 1)  อัปเดต HUD
+--       PickupOreBE:Fire()         บอก UI ว่าเก็บแล้ว
+--       GetOreRF:InvokeServer(uuid)  ให้เซิร์ฟเวอร์จองของให้
+-- UUID อยู่ในตารางภายในของ OreDropUtils จึงอ่านตรง ๆ ไม่ได้
+--   แต่ไม่ต้องรู้ก็ได้ เพราะ prompt เรียก callback นั้นให้เราเองได้
+--   ด้วย InputHoldBegin() -> ได้ผลเหมือนผู้เล่นกดปุ่มทุกประการ
+local function collectOres()
+    local cache = getOreCache()
+    if not cache then return 0, 0 end
+
+    -- 1) รวบรวมแร่ที่ตกอยู่ แล้วเรียงจากราคาแพงสุดไปถูกสุด
+    --    ของที่ไม่ใช่แร่ (เช่นก้อนเสริม) ชื่อไม่ตรง Ore_ตัวเลข -> ข้ามไป
+    --    เพราะมันถูกเกมดูดเข้าตัวเองอยู่แล้วใน 1.2 วิ (OreUtils.lua:89-99)
+    local ores = {}
+    for _, model in ipairs(cache:GetChildren()) do
+        if model:IsA("Model") and model.Name:match("^Ore_%d+$") then
+            ores[#ores + 1] = model
+        end
+    end
+    if #ores == 0 then return 0, 0 end
+
+    table.sort(ores, function(a, b)
+        return getOrePrice(a.Name) > getOrePrice(b.Name)
+    end)
+
+    -- 2) เก็บทีละชิ้นจากแพงสุด หยุดทันทีที่กระเป๋าเต็ม
+    --    ถ้ากระเป๋าพอทั้งหมดจะเก็บครบทุกชิ้นเท่ากัน
+    local taken = 0
+    for _, ore in ipairs(ores) do
+        local cur, max = getPack()
+        if not cur then
+            -- อ่าน HUD ไม่ได้ = ยังไม่มีเกมครบภาพหรือผิดโครงสร้าง
+            -- อย่าเดา ถ้าอ่านไม่ได้ก็เก็บไม่ได้ (กด prompt แล้วก็เต็มอยู่ดี)
+            break
+        end
+        if cur >= max then break end
+
+        local primary = ore.PrimaryPart
+        local prompt = primary and primary:FindFirstChildOfClass("ProximityPrompt")
+        if prompt and prompt.Enabled then
+            -- เกมตั้ง HoldDuration = 0.5 วิ (OreDropUtils.lua:134) รอให้เลย
+            pcall(function() prompt:InputHoldBegin() end)
+
+            -- รอจนกว่า HUD นับขึ้น 1 ชิ้น หรือ timeout
+            local waited = 0
+            while waited < 2 do
+                task.wait(0.1)
+                waited = waited + 0.1
+                local now = getPack()
+                if not now then break end
+                if now > cur then
+                    taken = taken + 1
+                    break
+                end
+            end
+        end
+    end
+    return taken, #ores
+end
+
+-- ============================================
 -- ลูปหลัก
 -- ============================================
 local running = false
 local selectedStage = STAGE_NAMES[1]
-local roundDelay = 3
-local shouldWarp = true
 
 -- รอจนกว่าเงื่อนไขจะเป็นจริง แต่ไม่เกิน timeout -> คืน true ถ้าสำเร็จ
 local function waitUntil(check, timeout, step)
@@ -245,11 +357,13 @@ local function runRound()
     -- 2) รอตัวละครพร้อม
     if not waitUntil(function() return getHRP() ~= nil end, 15) then return end
 
-    -- 3) วาร์ปไปที่สเตจที่เลือก
-    if shouldWarp then
-        warpToStage(selectedStage)
-        task.wait(0.4)
+    -- 3) วาร์ปไปที่สเตจที่เลือก (ทำทุกรอบ ไม่มีตัวเลือกปิด)
+    if not warpToStage(selectedStage) then
+        -- วาร์ปไม่ได้ = ยังโหลดแมพไม่เสร็จ หรือชื่อสเตจผิด
+        -- ถ้าเข้าสเตจต่อทันทีมอนจะเกิดที่จุดเกิดแล้วเดินกลับมาเองช้า
+        task.wait(1)
     end
+    task.wait(0.4)
 
     -- 4) เข้าสเตจ
     enterStage(selectedStage)
@@ -280,10 +394,16 @@ local function runRound()
         return
     end
 
-    -- 7) เก็บของ + กลับจุดเกิด
+    -- 6) เก็บของ: แพงสุดก่อน จนกว่ากระเป๋าจะเต็ม (หรือเก็บครบถ้าพอ)
+    collectOres()
     task.wait(0.5)
+
+    -- 7) ออกจากสเตจ -> ExitFight เก็บของที่เหลือให้เอง แล้ววาร์ปกลับจุดเกิด
+    --    (StageUtils.lua:175-198: ClaimedAllOreRE:FireServer -> CleanOres -> ToSpawn)
     ExitFightBE:Fire(true)
-    task.wait(roundDelay)
+
+    -- 8) หน่วง 3 วิ ก่อนเริ่มรอบใหม่
+    task.wait(3)
 end
 
 local function farmLoop()
@@ -340,8 +460,8 @@ function AutoFarm.register(context)
 
     section:Paragraph({
         Title = "วิธีใช้",
-        Desc = "เลือกสเตจ -> เปิดสวิตช์ -> ตัวละครจะวิ่งเข้าไปฆ่ามอนทั้งสเตจ "
-            .. "เก็บของอัตโนมัติ แล้วกลับจุดเกิดวนต่อ",
+        Desc = "เลือกสเตจ -> เปิดสวิตช์ -> ตัวละครจะวาร์ปไปที่สเตจ ฆ่ามอนให้ครบ "
+            .. "เก็บแร่จากอันแพงสุดไปจนกระเป๋าเต็ม แล้วกลับจุดเกิดวนต่อ",
     })
 
     section:Dropdown({
@@ -371,23 +491,6 @@ function AutoFarm.register(context)
             setRunning(value)
         end,
     })
-
-    local optionSection = tab:Section({Title = "ตัวเลือก", Opened = true})
-    if optionSection then
-        optionSection:Toggle({
-            Title = "วาร์ปไปที่สเตจก่อนตี",
-            Desc = "ปิดไว้ถ้าอยากอยู่ที่เดิมแล้วตีเอง (ฆ่าได้ทุกระยะเหมือนกัน ไม่ต้องเดินเข้าไป)",
-            Value = true,
-            Callback = function(value) shouldWarp = value == true end,
-        })
-        optionSection:Slider({
-            Title = "หน่วงเวลาระหว่างรอบ",
-            Desc = "วินาทีระหว่างเก็บของกับรอบถัดไป",
-            Value = {Min = 1, Max = 30, Default = 3},
-            Step = 1,
-            Callback = function(value) roundDelay = math.clamp(value, 1, 30) end,
-        })
-    end
 end
 
 return AutoFarm
