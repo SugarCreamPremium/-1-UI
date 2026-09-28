@@ -1,4 +1,4 @@
--- Version 1.00
+-- Version 2.18
 -- แถบขายของ
 --
 -- กลไกของเกมที่ใช้ (อ่านจากดัมป์):
@@ -166,36 +166,36 @@ end
 
 local sellEnabled = false
 local sellRunning = false
-local label = nil
+local labels = {}
 local SELL_EVERY = 1.5
 
-local function updateLabel()
-    if not label then return end
+-- เขียนข้อความลง Paragraph หนึ่งอัน
+--   Paragraph ไม่มี SetValue แต่มี SetDesc ของตัวเฟรมข้างใน (components/window/Element.lua:482)
+local function setDesc(entry, text)
+    if not entry then return end
+    entry.Desc = text
+    pcall(function() entry.ParagraphFrame:SetDesc(text) end)
+end
 
-    local parts = {}
-    local coin = getCoin()
-    if coin then
-        parts[#parts + 1] = "เหรียญ " .. fmt(coin)
+-- สถานะแยกทีละบรรทัด เป็นคนละ Paragraph กัน
+--   Desc ของ Paragraph เป็นบรรทัดเดียว ถ้าใส่ \n แล้วยาวเกินกรอบจะถูกตัดทิ้ง
+local function updateLabel()
+    setDesc(labels.Coin, "เหรียญ " .. fmt(getCoin()))
+
+    for _, name in ipairs(STATS) do
+        local lv = readLevel(total or {}, name)
+        if lv >= MAX_LEVEL[name] then
+            setDesc(labels[name], "ครบแล้ว (" .. lv .. "/" .. MAX_LEVEL[name] .. ")")
+        else
+            setDesc(labels[name], lv .. "/" .. MAX_LEVEL[name])
+        end
     end
 
     if allStatsMaxed() then
-        parts[#parts + 1] = "อัปครบทุกสถิติแล้ว"
-        parts[#parts + 1] = "ไม่ขายอีก"
+        setDesc(labels.Status, "อัปครบทุกสถิติแล้ว ไม่ขายอีก")
     else
-        local left = {}
-        for _, name in ipairs(STATS) do
-            local lv = readLevel(total or {}, name)
-            if lv < MAX_LEVEL[name] then
-                left[#left + 1] = STAT_NAME[name] .. " " .. lv .. "/" .. MAX_LEVEL[name]
-            end
-        end
-        parts[#parts + 1] = "ยังอัปไม่ครบ: " .. table.concat(left, "  ")
+        setDesc(labels.Status, "กำลังขายแร่ในกระเป๋า")
     end
-
-    local text = table.concat(parts, "\n")
-    label.Desc = text
-    -- Paragraph ไม่มี SetValue แต่มี SetDesc ของตัวเฟรมข้างใน (components/window/Element.lua:482)
-    pcall(function() label.ParagraphFrame:SetDesc(text) end)
 end
 
 local function sellLoop()
@@ -241,11 +241,11 @@ function Sell.register(context)
             Callback = setSell,
         })
 
-        local status = section:Paragraph({
-            Title = "สถานะ",
-            Desc = "กำลังอ่านข้อมูล...",
-        })
-        label = status
+        labels.Coin = section:Paragraph({Title = "เหรียญ", Desc = "..."})
+        for _, name in ipairs(STATS) do
+            labels[name] = section:Paragraph({Title = STAT_NAME[name], Desc = "..."})
+        end
+        labels.Status = section:Paragraph({Title = "สถานะ", Desc = "..."})
     end
 
     refresh()
