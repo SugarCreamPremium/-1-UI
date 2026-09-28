@@ -1,14 +1,17 @@
--- Version 1.00
+-- Version 9.25
+-- หมวดผู้เล่น
 -- โมดูลนี้ไม่ require อะไรจากเกม ใช้แค่ Players + workspace
 -- เพราะเกมนี้ไม่มี require(player.PlayerScripts.Client) แบบเกมอื่น
-local HP = {}
+local Player = {}
 
 local Players = game:GetService("Players")
 local player = Players.LocalPlayer
 
-local ENEMY_FOLDER_NAME = "EnemyFolder"
 -- เลือดผู้เล่น = Inf
 local INF_HP = math.huge
+
+-- ความเร็วเดิน: 16 (ค่าปกติของเกม) ไปจนถึง 150
+local WALK_MIN, WALK_MAX, WALK_DEFAULT = 16, 150, 16
 
 -- ============================================
 -- เลือดผู้เล่น = Inf
@@ -108,94 +111,87 @@ local function setPlayerInf(value)
 end
 
 -- ============================================
--- เลือดมอนสเตอร์ใน workspace.EnemyFolder = 0
+-- ความเร็วเดิน = ล็อคค่า เกมเขียนทับไม่ได้
 -- ============================================
--- EnemyCTRL.HurtEnemy -> HPCTRL.DamageOnce -> UpdateHPValue
---   คืน true เมื่อ HPValue.Value <= 0 -> ฝั่ง client เรียก DeadEnemyData (ได้ของแล้ว)
---   EnemyFolder มีแค่ตัวละครมอน ตัวละครผู้เล่นอยู่ที่ Players/<ชื่อ>/HPValue
---   (ผู้เล่นไม่ได้อยู่ใน EnemyFolder จึงไม่โดนแตะ)
+-- เกมเขียน Humanoid.WalkSpeed โดยตรง ไม่ผ่านตัวควบคุมกลาง:
+--   CharUtils.UpdatePlrWalkSpeed (SkillSystemNew/Utils/CharUtils.lua:98,101)
+--   -> v1.WalkSpeed = v2[v3].Speed
+-- เรียกจาก debuff กับสกิล เช่น Ice (DebuffEffect.lua:38), Freezen (:113),
+--   Boss S1 ทั้งหมด และ SetWalkSpeedPercent(1.5) ตอนจบเวท (StageUtils.lua:259)
 --
--- มอนที่ HP = 0 จะตายตอนถูกโจมตีครั้งถัดไป ไม่ใช่ตายทันทีที่ตั้งค่า
---   เพราะ DeadEnemyData ถูกเรียกจาก HurtEnemy เท่านั้น
--- มอนที่ยังไม่ถูกโจมตีเลยก็ยังไม่ตาย แถบเลือดจะเห็นเป็น 0
+-- วิธีล็อค: ฟัง GetPropertyChangedSignal("WalkSpeed") แล้วเขียนค่าที่ตั้งไว้กลับทันที
+--   ตั้งค่าเดิมซ้ำ = Roblox ไม่ยิง signal กลับ -> ไม่เกิด recursion
+--   ไม่ต้องไปแก้ตาราง modifier ของเกม เพราะสคริปต์อื่นอาจเขียนทับอีก
+--
+-- ผลข้างเคียงที่ตั้งใจให้: ล็อคแล้ว debuff ที่ลดความเร็ว (น้ำแข็ง/ติดแข็ง) จะไม่มีผล
+--   ถ้าอยากให้ debuff ยังทำงาน ต้องปลดล็อค (เลื่อนสไลเดอร์) ซึ่งก็คือค่าปกติของเกมอยู่แล้ว
+local walkValue = nil
+local walkConn = nil
+local walkHum = nil
+local walkRunning = false
 
-local enemyZeroEnabled = false
-local enemyZeroRunning = false
-local enemyChildConn = nil
-
-local function zeroEnemyHP(enemy)
-    local hp = enemy:FindFirstChild("HPValue")
-    if not hp or not hp:IsA("NumberValue") then return false end
-    pcall(function()
-        if hp.Value ~= 0 then hp.Value = 0 end
-    end)
-    return true
+local function getHumanoid()
+    local char = player.Character
+    return char and char:FindFirstChildOfClass("Humanoid")
 end
 
--- คืนจำนวนมอนที่มี HPValue (ไม่นับตัวที่เกมยังไม่ได้ RegistEnemyHP)
-local function sweepEnemies()
-    local folder = workspace:FindFirstChild(ENEMY_FOLDER_NAME)
-    if not folder then return 0 end
-    local count = 0
-    for _, enemy in ipairs(folder:GetChildren()) do
-        if zeroEnemyHP(enemy) then
-            count = count + 1
-        end
+local function applyWalk()
+    local hum = getHumanoid()
+    if hum and walkValue and hum.WalkSpeed ~= walkValue then
+        pcall(function() hum.WalkSpeed = walkValue end)
     end
-    return count
 end
 
-local function enemyZeroLoop()
-    while enemyZeroEnabled do
-        local folder = workspace:FindFirstChild(ENEMY_FOLDER_NAME)
-        if folder then
-            if not enemyChildConn then
-                -- มอนใหม่ที่โผล่มา = เขียนทันที ไม่ต้องรอรอบถัดไป
-                -- แต่ EnemyCTRL เรียก RegistEnemyHP หลัง Parent เสร็จ
-                -- -> ตอน ChildAdded ยังไม่มี HPValue ต้องมีลูปคอยอีกชั้น
-                enemyChildConn = folder.ChildAdded:Connect(function(enemy)
-                    if enemyZeroEnabled then
-                        zeroEnemyHP(enemy)
-                    end
-                end)
+-- ผูก signal ใหม่ทุกครั้งที่ตัว Humanoid เปลี่ยน (respawn แล้วเป็นตัวใหม่)
+local function bindWalk()
+    local hum = getHumanoid()
+    if hum and hum ~= walkHum then
+        if walkConn then walkConn:Disconnect() end
+        walkHum = hum
+        walkConn = hum:GetPropertyChangedSignal("WalkSpeed"):Connect(applyWalk)
+    end
+end
+
+local function setWalk(value)
+    walkValue = math.clamp(math.floor(value + 0.5), WALK_MIN, WALK_MAX)
+    bindWalk()
+    applyWalk()
+    -- ถ้ายังไม่มีลูปคอยอยู่ ให้เปิด (ลูปนี้ทำหน้าที่จับกรณีเกมเปลี่ยนตัว Humanoid
+    -- โดยไม่ผ่าน CharacterAdded เช่นระหว่างตาย/เกิดใหม่)
+    if not walkRunning then
+        walkRunning = true
+        task.spawn(function()
+            while walkValue do
+                bindWalk()
+                applyWalk()
+                task.wait(1)
             end
-            sweepEnemies()
-        end
-        task.wait(0.5)
+            walkRunning = false
+        end)
     end
-    if enemyChildConn then enemyChildConn:Disconnect() end
-    enemyChildConn = nil
-    enemyZeroRunning = false
 end
 
-local function setEnemyZero(value)
-    enemyZeroEnabled = value == true
-    if enemyZeroEnabled then
-        if not enemyZeroRunning then
-            enemyZeroRunning = true
-            task.spawn(enemyZeroLoop)
-        end
+-- respawn แล้ว Humanoid มาใหม่ ต้องผูก signal ใหม่
+-- WaitForChild กันกรณี Humanoid ยังไม่ถูกสร้างตอน CharacterAdded ยิง
+player.CharacterAdded:Connect(function(char)
+    if not walkValue then return end
+    local hum = char:WaitForChild("Humanoid", 10)
+    if hum then
+        bindWalk()
+        applyWalk()
     end
-end
+end)
 
 -- ============================================
 -- register: ผูกกับแถบของ WindUI
 -- ============================================
-function HP.register(context)
+function Player.register(context)
     local tab = context.Tab
-    local WindUI = context.WindUI
     if not tab then return end
 
-    local function notify(title, desc)
-        if not WindUI then return end
-        pcall(function()
-            WindUI:Notify({Title = title, Content = desc, Duration = 3})
-        end)
-    end
-
-    local selfSection = tab:Section({Title = "เลือดผู้เล่น", Opened = true})
-    if selfSection then
-        selfSection:Toggle({
+    local hpSection = tab:Section({Title = "เลือดผู้เล่น", Opened = true})
+    if hpSection then
+        hpSection:Toggle({
             Title = "เลือดไม่จำกัด (Inf)",
             Desc = "ตั้ง HPValue ของตัวเองเป็น Inf เลือดไม่มีวันหมด "
                 .. "(ตัวเลขบนแถบเลือดจะขึ้น nan แต่แถบยังเต็มปกติ)",
@@ -204,24 +200,16 @@ function HP.register(context)
         })
     end
 
-    local enemySection = tab:Section({Title = "เลือดมอนสเตอร์", Opened = true})
-    if enemySection then
-        enemySection:Toggle({
-            Title = "เซ็ต HP มอนสเตอร์เป็น 0",
-            Desc = "ตั้ง HPValue ใน workspace.EnemyFolder ทุกตัวเป็น 0 "
-                .. "มอนจะตายทันทีที่ถูกโจมตีครั้งถัดไป (ปิดแล้วมอนที่เหลือคงค่า 0 ไว้)",
-            Value = false,
-            Callback = setEnemyZero,
-        })
-        enemySection:Button({
-            Title = "เซ็ตครั้งเดียว",
-            Desc = "ทำหนึ่งรอบแล้วเลิด ไม่ต้องเปิดค้างไว้",
-            Callback = function()
-                local count = sweepEnemies()
-                notify("เซ็ต HP มอนสเตอร์แล้ว", "ตั้งเป็น 0 ให้ " .. count .. " ตัว")
-            end,
+    local moveSection = tab:Section({Title = "การเคลื่อนที่", Opened = true})
+    if moveSection then
+        moveSection:Slider({
+            Title = "ความเร็วเดิน",
+            Desc = "ล็อคค่าไว้ เกมจะเปลี่ยนกลับไม่ได้ (รวมถึง debuff ที่ลดความเร็วด้วย)",
+            Value = {Min = WALK_MIN, Max = WALK_MAX, Default = WALK_DEFAULT},
+            Step = 1,
+            Callback = setWalk,
         })
     end
 end
 
-return HP
+return Player
