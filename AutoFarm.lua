@@ -1,4 +1,4 @@
--- Version 1.40
+-- Version 1.46
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจร: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
@@ -566,9 +566,9 @@ function AutoFarm.register(context)
         display[i] = (name:gsub("_", " "))
     end
 
-    local section = tab:Section({Title = "Auto Farm", Opened = true})
+    local section = tab:Section({Title = "Dungeon", Opened = true})
     if not section then
-        tab:Paragraph({Title = "Auto Farm", Desc = "ไม่สามารถสร้างส่วนควบคุมได้"})
+        tab:Paragraph({Title = "Dungeon", Desc = "ไม่สามารถสร้างส่วนควบคุมได้"})
         return
     end
 
