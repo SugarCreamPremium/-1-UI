@@ -1,8 +1,38 @@
--- Version 9.36
+-- Version 10.41
 -- หมวดต่อสู้
 local Combat = {}
 
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local player = Players.LocalPlayer
 local ENEMY_FOLDER_NAME = "EnemyFolder"
+
+-- ============================================
+-- ดึง BindableEvent โดยไม่ต้อง require (เหมือนใน AutoFarm)
+-- ============================================
+local function getBindable(folderName, eventName)
+    local root = ReplicatedStorage:FindFirstChild("Remote")
+    if not root then
+        root = Instance.new("Folder")
+        root.Name = "Remote"
+        root.Parent = ReplicatedStorage
+    end
+    local folder = root:FindFirstChild(folderName)
+    if not folder then
+        folder = Instance.new("Folder")
+        folder.Name = folderName
+        folder.Parent = root
+    end
+    local ev = folder:FindFirstChild(eventName)
+    if not ev then
+        ev = Instance.new("BindableEvent")
+        ev.Name = eventName
+        ev.Parent = folder
+    end
+    return ev
+end
+
+local EnemyHitBE = getBindable("Attack", "EnemyHitBE")
 
 -- ============================================
 -- เลือดมอนสเตอร์ใน workspace.EnemyFolder = 0
@@ -75,6 +105,79 @@ local function setEnemyZero(value)
 end
 
 -- ============================================
+-- Kill Aura (ตีรัศมี)
+-- ============================================
+-- ยิง EnemyHitBE ใส่มอนทุกตัวที่อยู่ในระยะ โดยไม่ต้องหันตัวหรือเดินเข้าไป
+--   EnemyHitBE:Fire(uuid, ดาเมจ, opts) -> StageUtils.HurtEnemy
+--     -> EnemyCTRL.HurtEnemy -> HPCTRL.DamageOnce -> HPValue <= 0 -> ตาย
+--
+-- ดาเมจ = HP ของมอนเอง +1 (ห้ามใช้ค่าคงที่ เพราะเลือดมอนโตแบบทวีคูญ)
+--   และห้ามใช้ math.huge เพราะ HPCTRL.DamageOnce เอา 1e18 ไปลบ inf
+--   ได้ inf ซึ่งไม่ <= 0 = ไม่ตาย
+local function hitEnemy(enemy)
+    local hp = enemy:FindFirstChild("HPValue")
+    local damage = 1
+    if hp and hp:IsA("NumberValue") then
+        damage = (tonumber(hp.Value) or 0) + 1
+    end
+    if damage < 1 then damage = 1 end
+    -- ต้องส่ง 3 อาร์กิวเมนต์: SuperLootManager.client.lua:78 ทำ p3.Damage = ...
+    -- ถ้าส่งแค่ 2 จะ error ตรงนั้น
+    pcall(function()
+        EnemyHitBE.Event:Fire(enemy.Name, damage, {
+            SkillID = "K_ATK_1",
+            IsCrit = false,
+            Damage = damage,
+        })
+    end)
+end
+
+local function getHRP()
+    local char = player.Character
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local auraEnabled = false
+local auraRange = 25
+local auraRunning = false
+
+-- ยิงมอนทุกตัวที่อยู่ในระยะ -> คืนจำนวนที่โดน
+local function auraSweep()
+    local hrp = getHRP()
+    local folder = workspace:FindFirstChild(ENEMY_FOLDER_NAME)
+    if not hrp or not folder then return 0 end
+
+    local origin = hrp.Position
+    local hit = 0
+    for _, enemy in ipairs(folder:GetChildren()) do
+        if enemy:IsA("Model") then
+            local primary = enemy.PrimaryPart or enemy:FindFirstChild("HumanoidRootPart")
+            if primary and (primary.Position - origin).Magnitude <= auraRange then
+                hitEnemy(enemy)
+                hit = hit + 1
+            end
+        end
+    end
+    return hit
+end
+
+local function auraLoop()
+    while auraEnabled do
+        auraSweep()
+        task.wait(0.1)
+    end
+    auraRunning = false
+end
+
+local function setAura(value)
+    auraEnabled = value == true
+    if auraEnabled and not auraRunning then
+        auraRunning = true
+        task.spawn(auraLoop)
+    end
+end
+
+-- ============================================
 -- register: ผูกกับแถบของ WindUI
 -- ============================================
 function Combat.register(context)
@@ -103,6 +206,31 @@ function Combat.register(context)
             Callback = function()
                 local count = sweepEnemies()
                 notify("เซ็ต HP มอนสเตอร์แล้ว", "ตั้งเป็น 0 ให้ " .. count .. " ตัว")
+            end,
+        })
+    end
+
+    local auraSection = tab:Section({Title = "Kill Aura", Opened = true})
+    if auraSection then
+        auraSection:Toggle({
+            Title = "เปิด Kill Aura",
+            Desc = "ตีมอนอัตโนมัติทุกตัวที่อยู่ในระยะ ไม่ต้องเดินเข้าไปหรือหันตัวเอง",
+            Value = false,
+            Callback = setAura,
+        })
+        auraSection:Slider({
+            Title = "ระยะ",
+            Desc = "หน่วย stud วัดจากตัวละคร (ยิ่งไกลยิงพลาดมากขึ้น)",
+            Value = {Min = 5, Max = 80, Default = 25},
+            Step = 1,
+            Callback = function(value) auraRange = math.clamp(value, 5, 80) end,
+        })
+        auraSection:Button({
+            Title = "ยิงครั้งเดียว",
+            Desc = "ยิงมอนในระยะ 1 รอบ แล้วหยุด (ไม่ต้องเปิดสวิตช์ค้างไว้)",
+            Callback = function()
+                local hit = auraSweep()
+                notify("ยิงแล้ว", hit .. " ตัว ในระยะ " .. auraRange)
             end,
         })
     end
