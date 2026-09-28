@@ -1,4 +1,4 @@
--- Version 12.32
+-- Version 12.36
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจร: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
@@ -269,18 +269,42 @@ end
 --   ที่เกมสร้างตอนรันด้วย Instance.new("ProximityPrompt", Model.PrimaryPart)
 --     (OreDropUtils.lua:123)
 --
--- วิธียิง: :Fire() เหมือนที่ Infinite Yield ใช้ และใช้วิธีนี้อย่างเดียว
---   ไม่มี fallback เป็น InputHoldBegin ถ้าเรียกไม่ได้จะพิมพ์ error ออกมาให้เห็น
---   แทนที่จะสลับไปเรียกวิธีอื่นเงียบ ๆ แล้วเข้าใจผิดว่า Fire ใช้ได้
-local promptMethod = "Fire"
+-- วิธียิง: global function "fireproximityprompt" ที่ executor เขียนมาให้
+--   นี่แหละคือตัวที่ Infinite Yield ใช้ ไม่ใช่เมธอด Fire ของ ProximityPrompt
+--   ProximityPrompt มีแค่ InputHoldBegin/InputHoldEnd ไม่มีเมธอด Fire เลย
+--   (:Fire() เป็นของ BindableEvent ที่เราเรียกตอนฆ่ามอน/ออกสเตจ)
+--
+--   อาร์กิวเมนต์: fireproximityprompt(prompt, holdDuration, skipDistanceCheck)
+--     holdDuration = 0   ยิงทันที ไม่ต้องกดค้าง 0.5 วิ ตามที่เกมตั้งไว้
+--                      (OreDropUtils.lua:133  HoldDuration = 0.5)
+--     3 ตัวที่ 3 = true  ไม่เช็คระยะ เพราะแร่ตกอยู่ไกลจากจุดวาร์ป
+--                      (OreDropUtils.lua:132 MaxIndicatorDistance = 10)
+--
+--   ถ้า executor ไม่มีตัวนี้ ค่อยใช้วิธีกดค้างจริงแบบเดียวกับ MainScript.lua:2462-2467
+local promptMethod = "fireproximityprompt"
 local fireError = nil
 
 local function firePrompt(prompt)
-    local ok, err = pcall(function() prompt:Fire() end)
+    if typeof(fireproximityprompt) == "function" then
+        local ok, err = pcall(fireproximityprompt, prompt, 0, true)
+        if not ok and not fireError then
+            fireError = tostring(err)
+            print("[Auto Farm] fireproximityprompt error -> " .. fireError)
+        end
+        return ok
+    end
+
+    -- executor ไม่มี global ตัวนี้ -> กดค้างเอง แต่ตัดเวลาค้างออกให้เป็น 0 ก่อน
+    local ok, err = pcall(function()
+        prompt.HoldDuration = 0
+        prompt:InputHoldBegin()
+        task.wait(0.05)
+        prompt:InputHoldEnd()
+    end)
     if not ok and not fireError then
-        -- พิมพ์ครั้งเดียว ไม่ต้องรกทุกชิ้น
+        promptMethod = "InputHoldBegin"
         fireError = tostring(err)
-        print("[Auto Farm] prompt:Fire() ใช้ไม่ได้ -> " .. fireError)
+        print("[Auto Farm] executor ไม่มี fireproximityprompt -> ใช้ InputHoldBegin แทน")
     end
     return ok
 end
@@ -381,7 +405,7 @@ local function collectOres()
                 taken = taken + 1
             end
             if fireError then
-                -- Fire ใช้ไม่ได้ = วิธีเดียวที่สั่งให้ใช้ ไม่ต้องรอ 1.5 วิ ให้ครบทุกชิ้นแล้ว
+                -- ยิงไม่ขึ้น = วิธีที่มีใช้ไม่ได้ ไม่ต้องรอ 1.5 วิ ให้ครบทุกชิ้นแล้ว
                 -- ตัวนับ taken ข้างบนคือผลจริง ปล่อยให้รอบนี้จบเร็วแล้วไปรอบต่อไป
                 break
             end
@@ -391,9 +415,9 @@ local function collectOres()
         print("[Auto Farm] หา ProximityPrompt ไม่เจอ " .. noPrompt .. " ชิ้น")
     end
     if fireError then
-        print("[Auto Farm] :Fire() ไม่มีเมธอดนี้บน ProximityPrompt -> ไม่มีทางเก็บของ")
+        print("[Auto Farm] ยิง ProximityPrompt ไม่ขึ้น (" .. promptMethod .. ") -> เก็บได้ 0 ชิ้น")
     else
-        print("[Auto Farm] ยิง ProximityPrompt ด้วย :" .. promptMethod .. "() ได้ผล")
+        print("[Auto Farm] ยิง ProximityPrompt ด้วย " .. promptMethod .. " ได้ผล")
     end
     return taken, #ores
 end
