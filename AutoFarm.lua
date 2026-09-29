@@ -1,7 +1,8 @@
--- Version 1.46
+-- Version 12.52
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
--- วงจร: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
+-- วงจรของสเตจ: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
+-- อีกส่วนคือ Auto Train (ยืนเทรนในจุดที่ดีที่สุดตามจำนวน Rebirth) และ Auto Rebirth
 --
 -- กลไกของเกมที่ใช้ (อ่านจากดัมป์):
 --   เข้า:  HumanoidRootPart ทับ part ใน StageMap.AreaPart -> Touched
@@ -64,6 +65,17 @@ end
 
 local EnemyHitBE = getBindable("Attack", "EnemyHitBE")
 local ExitFightBE = getBindable("Stage", "ExitFightBE")
+
+-- ดึง RemoteEvent ของฝั่งเซิร์ฟเวอร์ (ต่างจาก getBindable ตรงบนที่เป็น BindableEvent ในเครื่อง)
+local function getRemote(folderName, remoteName)
+    local root = ReplicatedStorage:FindFirstChild("Remote")
+    if not root then return nil end
+    local folder = root:FindFirstChild(folderName)
+    if not folder then return nil end
+    return folder:FindFirstChild(remoteName)
+end
+
+local TryRebirthRE = getRemote("Rebirth", "TryRebirthRE")
 
 -- ============================================
 -- รายชื่อสเตจ
@@ -421,9 +433,170 @@ local function collectOres()
 end
 
 -- ============================================
+-- Auto Train (ยืนเทรนในจุดที่ดีที่สุดที่เราเข้าได้)
+-- ============================================
+-- จุดเทรนอยู่ที่ workspace.TOUCHED.AutoTrainArea.<เลข>  เป็น Part ชื่อเป็นเลข 1..11
+--   (GuiUtils/AutoTrainAreaGUI.lua:21,37-39 ไล่ GetChildren แล้วเอา tonumber(ชื่อ) ไปใช้)
+--   จุดที่ 1 คือจุดแรกที่เกมชี้ให้ผู้เล่นใหม่ไปยืน (新手引导.client.lua:317-321)
+--
+-- เข้าจุดได้เมื่อ จำนวน Rebirth ที่มี >= Rebirth ที่จุดนั้นต้องใช้
+--   (AutoTrainAreaGUI.lua:67-80  CheckCanIntoTrainArea: GetNeedRebirth(n) <= Eco.rebirth.Value)
+--   จุดที่ต้องซื้อเงินจริง (IsPay) เช็คเองไม่ได้ว่าซื้อแล้วหรือยัง เลยข้ามไป
+--
+-- ยืนถึงแค่ไหน = จุดที่เลขสูงสุดที่เข้าได้ ค่ายิ่งสูงยิ่งได้ตัวคูณเทรนสูง
+--   (Utils/BalanceUtils.lua:163  GetTrainAreaBasic เอา Basic ของจุดที่ยืนอยู่ไปคูณดาเมจ)
+--   เกมเดิมให้เลขเพิ่มขึ้นตามเลขจุดพอดี (1.5, 2, 4, 6, 8, 10, 15, 25) จึงไล่จากเลขสูงสุดลงมาได้เลย
+-- คัดลอกจาก Config/TrainArea/Config.lua ตรง ๆ (require ไม่ได้ ดูหัวไฟล์)
+--   จุดที่ 9,10,11 ซื้อด้วย Robux (Monetization.lua:22-24) ไม่ใช่ด้วย Rebirth
+local TRAIN_AREA = {
+    {Basic = 1.5, NeedRebirth = 0},
+    {Basic = 2, NeedRebirth = 2},
+    {Basic = 4, NeedRebirth = 5},
+    {Basic = 6, NeedRebirth = 9},
+    {Basic = 8, NeedRebirth = 12},
+    {Basic = 10, NeedRebirth = 15},
+    {Basic = 15, NeedRebirth = 18},
+    {Basic = 25, NeedRebirth = 21},
+    {Basic = 100, NeedRebirth = 0, IsPay = true},
+    {Basic = 10, NeedRebirth = 0, IsPay = true},
+    {Basic = 20, NeedRebirth = 0, IsPay = true},
+}
+
+local function getEcoValue(name)
+    local eco = player:FindFirstChild("Eco")
+    local value = eco and eco:FindFirstChild(name)
+    if not value then return nil end
+    return tonumber(value.Value)
+end
+
+-- Eco.rebirth เป็น NumberValue อ่านสดได้ ไม่ต้องยิง remote
+--   (AutoTrainAreaGUI.lua:22  rebirth = Eco:WaitForChild("rebirth"))
+local function getRebirth()
+    return getEcoValue("rebirth")
+end
+
+local function getLevel()
+    return getEcoValue("level")
+end
+
+-- จุดที่ดีที่สุดที่เข้าได้ คืนเลขจุด หรือ nil ถ้าไม่มีจุดไหนเข้าได้เลย
+local function bestTrainArea(rebirth)
+    if not rebirth then return nil end
+    for index = #TRAIN_AREA, 1, -1 do
+        local area = TRAIN_AREA[index]
+        if not area.IsPay and area.NeedRebirth <= rebirth then
+            return index
+        end
+    end
+    return nil
+end
+
+-- วาร์ปไปยืนกลางจุดเทรนนั้น
+local function warpToTrain(areaId)
+    local char = player.Character
+    if not char or not getHRP() then return false end
+
+    local touched = workspace:FindFirstChild("TOUCHED")
+    local areas = touched and touched:FindFirstChild("AutoTrainArea")
+    local spot = areas and areas:FindFirstChild(tostring(areaId))
+    if not spot then return false end
+
+    return pcall(function()
+        if spot:IsA("Model") then
+            char:PivotTo(spot:GetPivot())
+        elseif spot:IsA("BasePart") then
+            char:PivotTo(spot.CFrame * CFrame.new(0, 3, 0))
+        end
+    end)
+end
+
+-- เข้าเกมจะเริ่มเทรนให้เองเมื่อ attribute นี้เป็นเลขจุดที่ยืนอยู่
+--   TrainCTRL.lua:55-66 ฟัง GetAttributeChangedSignal("AutoTrainAreaID")
+--     ได้ค่า -> StartAutoTrain() ยิง Train/IntoAutoTrainRE แล้วล็อกตัวละครไว้บน DUMMY เอง
+--   BalanceUtils.lua:163 ใช้ attribute เดียวกันนี้คิดตัวคูณดาเมจตอนเทรน
+--   การยืนแค่อยู่อาจไม่พอ เพราะเกมต้องการกดปุ่ม Allow ในหน้าต่างของจุดนั้น
+--   (AutoTrainAreaGUI.lua:50  Rebirth_4:WaitForChild("Allow"))
+--   -> ตั้งให้ตรงกับจุดที่วาร์ปไปแทน ผลเหมือนกันทุกอย่าง
+local function enterTrainArea(areaId)
+    if not warpToTrain(areaId) then return false end
+    if player:GetAttribute("AutoTrainAreaID") ~= areaId then
+        player:SetAttribute("AutoTrainAreaID", areaId)
+    end
+    return true
+end
+
+local trainEnabled = false
+local trainRunning = false
+local currentArea = nil
+local TRAIN_EVERY = 1
+
+local function trainLoop()
+    while trainEnabled do
+        if not getHRP() then
+            task.wait(1)
+        else
+            local best = bestTrainArea(getRebirth())
+            -- ย้ายเมื่อจุดที่ดีที่สุดเปลี่ยนไป หรือเมื่อเกมหลุด attribute ทิ้ง
+            if best and (best ~= currentArea or player:GetAttribute("AutoTrainAreaID") ~= best) then
+                currentArea = best
+                enterTrainArea(best)
+            end
+            task.wait(TRAIN_EVERY)
+        end
+    end
+    trainRunning = false
+end
+
+-- ============================================
+-- Auto Rebirth
+-- ============================================
+-- ปุ่มรีเบิร์ธของเกมเช็คแค่ 2 อย่าง (GuiUtils/RebirthGUI.lua:81-93)
+--   1) ยังไม่ครบเพดาน  2) เลเวล >= เลเวลที่ต้องใช้ของระดับถัดไป แล้วยิง TryRebirthRE
+--     Rebirth/TryRebirthRE:FireServer()  ไม่มีอาร์กิวเมนต์
+-- เลเวลที่ต้องใช้ = 25 * จำนวนรีเบิร์ธที่จะไปถึง  ตรงกับ Config/Rebirth/Config.lua ทุกแถว
+--   (NeedLevel ไล่ 0, 25, 50, ... 1125 = 25 คูณเลข index พอดี)
+-- เพดาน = 45  (Config/Rebirth/Helper.lua:17  #Config - 1)
+local MAX_REBIRTH = 45
+local NEED_LEVEL_STEP = 25
+local REBIRTH_EVERY = 0.5
+
+local function canRebirth()
+    local rebirth = getRebirth()
+    local level = getLevel()
+    if not rebirth or not level then return false end
+    if rebirth >= MAX_REBIRTH then return false end
+    return level >= NEED_LEVEL_STEP * (rebirth + 1)
+end
+
+local rebirthEnabled = false
+local rebirthRunning = false
+
+local function rebirthLoop()
+    while rebirthEnabled do
+        if canRebirth() then
+            local remote = TryRebirthRE or getRemote("Rebirth", "TryRebirthRE")
+            if remote then
+                TryRebirthRE = remote
+                local before = getRebirth()
+                pcall(function() remote:FireServer() end)
+                -- รอให้ตัวเลขขยับจริง กันยิงซ้ำถ้าเซิร์ฟเวอร์ช้า
+                local waited = 0
+                while waited < 3 and getRebirth() == before do
+                    task.wait(0.1)
+                    waited = waited + 0.1
+                end
+            end
+        end
+        task.wait(REBIRTH_EVERY)
+    end
+    rebirthRunning = false
+end
+
+-- ============================================
 -- ลูปหลัก
 -- ============================================
 local running = false
+local farmRunning = false
 local selectedStage = STAGE_NAMES[1]
 
 -- รอจนกว่าเงื่อนไขจะเป็นจริง แต่ไม่เกิน timeout -> คืน true ถ้าสำเร็จ
@@ -526,12 +699,32 @@ local function farmLoop()
         -- กันหลุดลูกตอนผู้ใช้กดปิดสวิตช์ครั้งแรก (ยังไม่ได้ทำอะไรเลย)
         if running then task.wait(0.5) end
     end
+    farmRunning = false
 end
 
 local function setRunning(value)
     running = value == true
-    if running then
+    if running and not farmRunning then
+        farmRunning = true
         task.spawn(farmLoop)
+    end
+end
+
+-- เปิด/ปิด Auto Train
+local function setTrain(value)
+    trainEnabled = value == true
+    if trainEnabled and not trainRunning then
+        trainRunning = true
+        task.spawn(trainLoop)
+    end
+end
+
+-- เปิด/ปิด Auto Rebirth
+local function setRebirth(value)
+    rebirthEnabled = value == true
+    if rebirthEnabled and not rebirthRunning then
+        rebirthRunning = true
+        task.spawn(rebirthLoop)
     end
 end
 
@@ -566,6 +759,43 @@ function AutoFarm.register(context)
         display[i] = (name:gsub("_", " "))
     end
 
+    -- ส่วน Train ต้องอยู่เหนือ Dungeon เพราะ WindUI เรียงตามลำดับที่สร้าง
+    local trainSection = tab:Section({Title = "Train", Opened = true})
+    if trainSection then
+        trainSection:Toggle({
+            Title = "เริ่ม Auto Train",
+            Desc = "วาร์ปไปยืนจุดเทรนที่ดีที่สุดที่จำนวน Rebirth จะไปถึง "
+                .. "พอ Rebirth แล้วก็ย้ายไปจุดที่ดีกว่าให้เอง",
+            Value = false,
+            Callback = function(value)
+                if value then
+                    -- ฟาร์มสเตจกับยืนเทรนสั่งให้ตัวละครไปคนละที่ ถ้าเปิดพร้อมกันจะดึงกันไปมา
+                    running = false
+                    notify("Auto Train เริ่มทำงาน", "กำลังไปหาจุดเทรนที่ดีที่สุดให้")
+                else
+                    -- ปิดแล้วต้องเอาตัวละครออกจากจุดเทรนด้วย ไม่งั้นเกมจะล็อกตัวละครไว้บน DUMMY ตลอดไป
+                    --   (TrainCTRL.lua:61-62  attribute เป็น nil -> ExitAutoTrain)
+                    if currentArea and player:GetAttribute("AutoTrainAreaID") == currentArea then
+                        player:SetAttribute("AutoTrainAreaID", nil)
+                    end
+                    currentArea = nil
+                end
+                setTrain(value)
+            end,
+        })
+        trainSection:Toggle({
+            Title = "Auto Rebirth",
+            Desc = "ถ้าเลเวลถึงเกณฑ์ของ Rebirth ถัดไปแล้ว Rebirth ให้ทันที",
+            Value = false,
+            Callback = function(value)
+                if value then
+                    notify("Auto Rebirth เปิดอยู่", "จะ Rebirth ให้ทันทีที่เลเวลถึงเกณฑ์")
+                end
+                setRebirth(value)
+            end,
+        })
+    end
+
     local section = tab:Section({Title = "Dungeon", Opened = true})
     if not section then
         tab:Paragraph({Title = "Dungeon", Desc = "ไม่สามารถสร้างส่วนควบคุมได้"})
@@ -594,6 +824,9 @@ function AutoFarm.register(context)
         Value = false,
         Callback = function(value)
             if value then
+                -- เหมือนกันกับ Auto Train ข้างบน ปิดยืนเทรนให้อัตโนมัติ
+                trainEnabled = false
+                currentArea = nil
                 notify("Auto Farm เริ่มทำงาน", "กำลังฟาร์ม " .. (selectedStage or ""):gsub("_", " "))
             end
             setRunning(value)
