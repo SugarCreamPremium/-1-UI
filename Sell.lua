@@ -1,4 +1,4 @@
--- Version 12.31
+-- Version 12.38
 -- แถบขายของ (มี 2 ตัวเลือก ใช้คนละเรื่องกัน)
 --
 --   1) "ขายแร่จนกว่าจะอัปเกรดครบ"  ขายเฉพาะแร่ และหยุดเองเมื่ออัปครบทั้ง 3 สถิติ
@@ -141,12 +141,6 @@ local function have()
     return list
 end
 
--- จำนวนของในชิ้นนั้น = entry.Number ถ้าไม่มีฟิลด์นี้แปลว่ามีชิ้นเดียว
---   (BackpackData.lua:167-175  GetNumberByIDType -> v1.Number หรือ 1)
-local function countOf(entry)
-    return tonumber(entry.Number) or 1
-end
-
 -- uuid ที่ใส่อยู่ทั้งหมด เป็นชุด
 --   (BackpackData.lua:107-116  IsEquipedUUID ไล่ค่าใน equiped ทั้งหมด)
 local function equipedSet()
@@ -231,44 +225,49 @@ local function sellOres()
 end
 
 -- ---------- ตัวที่ 2: ขายของทั้งหมด แต่เลี่ยงของที่ควรเก็บ ----------
--- เงื่อนไขที่ข้าม (เรียงตามที่ผู้ใช้บอก)
---   1) ชิ้นที่ใส่อยู่ตอนนี้        -> เทียบ uuid กับค่าใน equiped
---   2) ของที่มีแค่ชิ้นเดียว        -> entry.Number <= 1
---   3) ของที่แพงกว่าของที่ใส่อยู่  -> ราคาขายของตัวเอง > ราคาขายของที่ใส่ในช่องเดียวกัน
---      ถ้ายังไม่ได้ใส่อะไรในช่องนั้น ไม่มีตัวเทียบ -> ใช้แค่เงื่อนไข 1 กับ 2 ต่อไป
+-- แร่และของชนิดอื่นที่มีราคาขาย -> ขายหมดทุกชิ้น ไม่ต้องเก็บไว้
+-- อาวุธ/เกราะ/หมวก               -> เก็บไว้แค่ชิ้นเดียวของแต่ละ ID
+--   1) ชิ้นที่ใส่อยู่ตอนนี้        -> เก็บ (นับเป็นชิ้นที่เก็บไว้ของ ID นั้นเลย)
+--   2) ของที่แพงกว่าของที่ใส่อยู่  -> เก็บ ไว้ให้ผู้ใช้เอาไปเปลี่ยนเอง
+--   3) ถ้ามีหลายชิ้นของ ID เดียวกัน -> เก็บชิ้นแรก ที่เหลือขายเป็นตัวสำรอง
+--   4) ของที่ไม่มีราคาขาย        -> เซิร์ฟเวอร์ปฏิเสธอยู่ดี (Material/Buff/Potion) ไม่ยิงรัว
 local function sellableKeys()
     local list = have()
     if not list then return nil end
 
     local worn = equipedSet()
+    local kept = {}
     local keys = {}
+
+    -- นับชิ้นที่ใส่อยู่ก่อน เพื่อไม่ให้เก็บตัวสำรองของ ID เดียวกับที่ใส่อยู่
+    for slot in pairs(EQUIP_SLOTS) do
+        local entry = equipedItem(slot)
+        if entry and entry.ID then
+            kept[entry.ID] = true
+        end
+    end
 
     for key, entry in pairs(list) do
         if type(entry) == "table" then
-            local skip = false
+            local price = priceOf(entry)
 
-            -- 1) ของที่ใส่อยู่
-            if worn[key] then
-                skip = true
-            end
-
-            -- 2) ของที่มีแค่ชิ้นเดียว
-            if not skip and countOf(entry) <= 1 then
-                skip = true
-            end
-
-            -- 3) ของที่แพงกว่าของที่ใส่อยู่ในช่องเดียวกัน
-            if not skip and EQUIP_SLOTS[entry.Type] then
-                local mine = priceOf(entry)
-                local wornEntry = equipedItem(entry.Type)
-                local theirs = priceOf(wornEntry)
-                if mine and theirs and mine > theirs then
-                    skip = true
+            if price and price > 0 then
+                if not EQUIP_SLOTS[entry.Type] then
+                    -- แร่ -> ขายหมด
+                    keys[#keys + 1] = key
+                elseif not worn[key] then
+                    -- ของที่ยังไม่ได้ใส่ และยังไม่เคยเก็บ ID นี้ไว้
+                    if kept[entry.ID] then
+                        keys[#keys + 1] = key
+                    else
+                        kept[entry.ID] = true
+                        -- แพงกว่าของที่ใส่อยู่ = เก็บไว้ ไม่ขาย
+                        local theirs = priceOf(equipedItem(entry.Type))
+                        if not (theirs and price > theirs) then
+                            keys[#keys + 1] = key
+                        end
+                    end
                 end
-            end
-
-            if not skip then
-                keys[#keys + 1] = key
             end
         end
     end
@@ -359,13 +358,13 @@ function Sell.register(context)
     if section then
         section:Toggle({
             Title = "ขายแร่จนกว่าจะอัปเกรดครบ",
-            Desc = "ขายแร่ในกระเป๋าอัตโนมัติ ถ้าอัปเกรดครบทั้ง 3 สถิติแล้วจะไม่ขาย",
+            Desc = "ขายแร่ในกระเป๋าอัตโนมัติ ถ้าอัปเกรดครบทั้ง 3 จนตันแล้วจะไม่ขาย",
             Value = false,
             Callback = setSell,
         })
         section:Toggle({
             Title = "ขายของอัตโนมัติ",
-            Desc = "ขายของทุกชิ้น ยกเว้นของที่ใส่อยู่ ของที่มีแค่ชิ้นเดียว และของที่แพงกว่าของที่ใส่อยู่",
+            Desc = "ขายแร่หมด ขายอาวุธ/เกราะ/หมวกที่ซ้ำกันเหลือชิ้นเดียว เว้นเฉพาะที่ใส่อยู่และที่ดีกว่าของที่ใส่อยู่",
             Value = false,
             Callback = setSellAll,
         })
