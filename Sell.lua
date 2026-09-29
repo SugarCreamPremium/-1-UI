@@ -1,29 +1,34 @@
--- Version 2.18
--- แถบขายของ
+-- Version 12.31
+-- แถบขายของ (มี 2 ตัวเลือก ใช้คนละเรื่องกัน)
+--
+--   1) "ขายแร่จนกว่าจะอัปเกรดครบ"  ขายเฉพาะแร่ และหยุดเองเมื่ออัปครบทั้ง 3 สถิติ
+--   2) "ขายของอัตโนมัติ"          ขายของทุกชิ้นในกระเป๋า แต่เลี่ยงของที่ต้องเก็บไว้
 --
 -- กลไกของเกมที่ใช้ (อ่านจากดัมป์):
 --   ขาย:  Backpack.TrySellItemRE:FireServer(uuid, จำนวน)
 --         (LocalData/BackpackData.lua:126-134  TrySellItem(p1, p2) -> u26:FireServer(p1, p2))
---         p1 = key ของชิ้นนั้นใน Backpack.have  ไม่ใช่ field UUID
+--         p1 = key ของชิ้นนั้นใน Backpack.have ไม่ใช่ field UUID
 --         p2 = จำนวน  ปุ่ม "ขาย 1" ส่ง 1  ปุ่ม "ขายทั้งกอง" ส่ง 9999
 --         (GuiUtils/SellGUI.lua:137,140)
---   ขายทั้งหมด: Backpack.TrySellAllRE:FireServer()  = ขายทุกชิ้นที่ยังไม่ได้ใส่
+--   ขายทั้งหมด: Backpack.TrySellAllRE:FireServer()  = ขายทุกชิ้นรวมทั้งที่ใส่อยู่
 --         (BackpackData.lua:136-138  SellAll -> u30:FireServer())
---         อันนี้ขายอาวุธ/เกราะด้วย จึงไม่ใช้ในโมดูลนี้
---   รายการของ: Backpack.have = { [key] = { Type = "Ore", ID = 12, Number = 5, ... } }
---         ของทุกอย่างรวมทั้งแร่ อยู่ใน store "Backpack"
---         (LocalData/BackpackData.lua:51  GetItemData -> u13.have[p1])
---   หน้าขายของเกมไม่ได้กรองชนิด: SellGUI.update() วนทุก key ใน have
---         แล้วสร้างเฟรมขายให้ทั้งหมด (SellGUI.lua:56-70)
---         -> แร่ก็ขายผ่านทางเดียวกันได้ ไม่ต้องหา remote ขายแร่แยก
---   ราคาขาย: Config/Ore/Config.lua ตัว Price เดียวกับที่ AutoFarm ใช้จัดลำดับ
---         (Config/Ore/Helper.lua:88-92  GetSellPrice(p1) -> Config[p1].Price)
---   เงิน:  LocalPlayer.Eco.coin.Value
+--         อันนี้ไม่มีตัวกรอง ใช้ไม่ได้ ถ้าอยากเลี่ยงของที่ใส่อยู่
+--   รายการของ: Backpack = { have = { [uuid] = {...} }, equiped = { [ช่อง] = uuid } }
+--         (BackpackData.lua:51 GetItemData -> u13.have[p1]
+--          BackpackData.lua:58 GetEquipUUIDByIndex(p1) -> u13.equiped[p1])
+--         ช่องที่ใส่ได้ = "Weapon" / "Armor" / "Hat"  (GetWeaponSkillIDByIndex ใช้ "Weapon")
+--   ของที่ใส่อยู่: สร้างชุด uuid จากค่าใน equiped แล้วเทียบ (BackpackData.lua:107 IsEquipedUUID)
+--   จำนวนของแต่ละชิ้น: entry.Number  ถ้าไม่มีฟิลด์นี้แปลว่าเป็นชิ้นเดียว
+--         (BackpackData.lua:167-175  GetNumberByIDType -> v1.Number หรือ 1)
+--   ราคาขาย: Config[ID].Price เหมือนกันหมดทั้งอาวุธ/เกราะ/หมวก/แร่
+--         (Config/Ore/Helper.lua:88 GetSellPrice -> Config[p1].Price
+--          Config/Armor/Helper.lua:78 GetSellPrice -> Config[p1].Price
+--          Config/Weapon/Helper.lua:107 GetSellPrice -> Config[p1].Price)
+--         ID ในกระเป๋าคือ key ของ Config เป๊ะ ๆ เช่น "K_5", "LHat_3", "Ore_12"
+--         เก็บราคาไว้ในตาราง PRICE ด้านล่าง เพราะ require Config ไม่ได้ (ดูหัวไฟล์ Upgrade.lua)
 local Sell = {}
 
-local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local player = Players.LocalPlayer
 
 -- ============================================
 -- ดึง remote โดยไม่ต้อง require
@@ -44,26 +49,54 @@ local TrySellItemRE = getRemote("Backpack", "TrySellItemRE")
 local GetTotalDataRF = getRemote("Profile", "GetTotalDataRF")
 
 -- ============================================
+-- ราคาขายต่อชิ้น คัดจาก Config ทั้งสามชนิด
+-- ============================================
+-- key = ID ที่ตรงกับ entry.ID ใน Backpack.have
+--   แร่   Ore_1 .. Ore_48          (48)
+--   อาวุธ G_/K_/L_               (52)
+--   เกราะ/หมวก HArmor_/HArmor… (60)
+-- ราคาของแร่ตรงกับ ORE_PRICE ใน AutoFarm.lua ทุกตัว (เช็คแล้ว)
+local PRICE = {
+    ["G_1"] = 48, ["G_2"] = 71, ["G_3"] = 95, ["G_4"] = 118, ["G_5"] = 142, ["G_6"] = 189, ["G_7"] = 708,
+    ["G_8"] = 1062, ["G_9"] = 1593, ["G_10"] = 6490, ["G_11"] = 9676, ["G_12"] = 11800, ["G_13"] = 16520, ["G_14"] = 66080,
+    ["G_15"] = 115640, ["G_16"] = 165200, ["G_17"] = 295000, ["G_18"] = 1180000, ["G_19"] = 2312800, ["G_20"] = 2478000, ["G_21"] = 5900000,
+    ["G_22"] = 9251200, ["G_23"] = 11800000, ["G_24"] = 14160000, ["G_25"] = 64900000, ["G_26"] = 97350000, ["HArmor_1"] = 10, ["HArmor_2"] = 17,
+    ["HArmor_3"] = 25, ["HArmor_4"] = 95, ["HArmor_5"] = 142, ["HArmor_6"] = 189, ["HArmor_7"] = 708, ["HArmor_8"] = 1062, ["HArmor_9"] = 1593,
+    ["HArmor_10"] = 6490, ["HArmor_11"] = 9676, ["HArmor_12"] = 11800, ["HArmor_13"] = 16520, ["HArmor_14"] = 66080, ["HHat_1"] = 10, ["HHat_2"] = 17,
+    ["HHat_3"] = 25, ["HHat_4"] = 95, ["HHat_5"] = 142, ["HHat_6"] = 189, ["HHat_7"] = 708, ["HHat_8"] = 1062, ["HHat_9"] = 1593,
+    ["HHat_10"] = 6490, ["HHat_11"] = 9676, ["HHat_12"] = 11800, ["HHat_13"] = 16520, ["HHat_14"] = 66080, ["K_1"] = 40, ["K_2"] = 60,
+    ["K_3"] = 80, ["K_4"] = 100, ["K_5"] = 120, ["K_6"] = 160, ["K_7"] = 600, ["K_8"] = 900, ["K_9"] = 1350,
+    ["K_10"] = 5500, ["K_11"] = 8200, ["K_12"] = 10000, ["K_13"] = 14000, ["K_14"] = 56000, ["K_15"] = 98000, ["K_16"] = 140000,
+    ["K_17"] = 250000, ["K_18"] = 1000000, ["K_19"] = 1960000, ["K_20"] = 2100000, ["K_21"] = 5000000, ["K_22"] = 7840000, ["K_23"] = 10000000,
+    ["K_24"] = 12000000, ["K_25"] = 55000000, ["K_26"] = 82500000, ["LArmor_1"] = 8, ["LArmor_2"] = 14, ["LArmor_3"] = 21, ["LArmor_4"] = 80,
+    ["LArmor_5"] = 120, ["LArmor_6"] = 160, ["LArmor_7"] = 600, ["LArmor_8"] = 900, ["LArmor_9"] = 1350, ["LArmor_10"] = 5500, ["LArmor_11"] = 8200,
+    ["LArmor_12"] = 10000, ["LArmor_13"] = 14000, ["LArmor_14"] = 56000, ["LArmor_15"] = 98000, ["LArmor_16"] = 140000, ["LHat_1"] = 8, ["LHat_2"] = 14,
+    ["LHat_3"] = 21, ["LHat_4"] = 80, ["LHat_5"] = 120, ["LHat_6"] = 160, ["LHat_7"] = 600, ["LHat_8"] = 900, ["LHat_9"] = 1350,
+    ["LHat_10"] = 5500, ["LHat_11"] = 8200, ["LHat_12"] = 10000, ["LHat_13"] = 14000, ["LHat_14"] = 56000, ["LHat_15"] = 98000, ["LHat_16"] = 140000,
+    ["Ore_1"] = 8, ["Ore_2"] = 14, ["Ore_3"] = 21, ["Ore_4"] = 35, ["Ore_5"] = 40, ["Ore_6"] = 55, ["Ore_7"] = 60,
+    ["Ore_8"] = 82, ["Ore_9"] = 125, ["Ore_10"] = 150, ["Ore_11"] = 175, ["Ore_12"] = 200, ["Ore_13"] = 225, ["Ore_14"] = 777,
+    ["Ore_15"] = 932, ["Ore_16"] = 1120, ["Ore_17"] = 1340, ["Ore_18"] = 1610, ["Ore_19"] = 1930, ["Ore_20"] = 2320, ["Ore_21"] = 2780,
+    ["Ore_22"] = 3531, ["Ore_23"] = 4823, ["Ore_24"] = 5524, ["Ore_25"] = 6120, ["Ore_26"] = 6950, ["Ore_27"] = 7230, ["Ore_28"] = 7990,
+    ["Ore_29"] = 8250, ["Ore_30"] = 9100, ["Ore_31"] = 11200, ["Ore_32"] = 12528, ["Ore_33"] = 13420, ["Ore_34"] = 14555, ["Ore_35"] = 16230,
+    ["Ore_36"] = 18800, ["Ore_37"] = 21000, ["Ore_38"] = 23250, ["Ore_39"] = 25539, ["Ore_40"] = 27980, ["Ore_41"] = 30000, ["Ore_42"] = 32420,
+    ["Ore_43"] = 36732, ["Ore_44"] = 42000, ["Ore_45"] = 47000, ["Ore_46"] = 53200, ["Ore_47"] = 60000, ["Ore_48"] = 80000,
+}
+
+-- ช่องที่ใส่ของได้ ใช้ตอนเทียบกับของที่ใส่อยู่
+local EQUIP_SLOTS = {Weapon = true, Armor = true, Hat = true}
+
+-- ============================================
 -- เลเวลสูงสุดของแต่ละสถิติ
 -- ============================================
 -- เลขสุดท้ายในตารางราคา = เลเวลที่อัปไม่ได้อีกแล้ว
 --   (Config/Upgrade/Helper.lua:28-31  ไม่มีแถวถัดไป = ตัน)
---   OrePack มี 13 แถว (0..12) / Train และ Luck มี 13 แถว (0..12)
 -- ค่านี้ต้องตรงกับ PRICE ใน Upgrade.lua ถ้าเกมอัปเวอร์ชันใหม่ให้ตรวจทั้งสองไฟล์
 local MAX_LEVEL = {OrePack = 12, Train = 12, Luck = 12}
-local STAT_NAME = {Train = "พลังโจมตี", Luck = "โชค", OrePack = "ขนาดกระเป๋า"}
 local STATS = {"OrePack", "Train", "Luck"}
 
 -- ============================================
 -- อ่านข้อมูลผู้เล่น
 -- ============================================
-local function getCoin()
-    local eco = player:FindFirstChild("Eco")
-    local coin = eco and eco:FindFirstChild("coin")
-    if not coin then return nil end
-    return tonumber(coin.Value) or 0
-end
-
 -- แคชข้อมูลจาก GetTotalDataRF ไว้ แล้วอัปเดตจาก UpdateDataRE ที่เซิร์ฟเวอร์ส่งมา
 --   ProfileData.lua:27-37  UpdateDataRE.OnClientEvent -> u26[key] = value
 local total = nil
@@ -98,18 +131,51 @@ if UpdateDataRE then
     end)
 end
 
--- กุญแจของชิ้นที่เป็นแร่ ทั้งหมดในกระเป๋า
-local function oreKeys()
-    local have = total and total.Backpack and total.Backpack.have
-    if type(have) ~= "table" then return nil end
-    local keys = {}
-    for key, entry in pairs(have) do
-        -- แร่เท่านั้น ไม่แตะอาวุธ/เกราะ/หมวก เพราะผู้ใช้อาจจะเก็บไว้ใช้
-        if type(entry) == "table" and entry.Type == "Ore" then
-            keys[#keys + 1] = key
+-- ============================================
+-- ตัวช่วยอ่านกระเป๋า
+-- ============================================
+local function have()
+    local pack = total and total.Backpack
+    local list = pack and pack.have
+    if type(list) ~= "table" then return nil end
+    return list
+end
+
+-- จำนวนของในชิ้นนั้น = entry.Number ถ้าไม่มีฟิลด์นี้แปลว่ามีชิ้นเดียว
+--   (BackpackData.lua:167-175  GetNumberByIDType -> v1.Number หรือ 1)
+local function countOf(entry)
+    return tonumber(entry.Number) or 1
+end
+
+-- uuid ที่ใส่อยู่ทั้งหมด เป็นชุด
+--   (BackpackData.lua:107-116  IsEquipedUUID ไล่ค่าใน equiped ทั้งหมด)
+local function equipedSet()
+    local set = {}
+    local pack = total and total.Backpack
+    local equiped = pack and pack.equiped
+    if type(equiped) ~= "table" then return set end
+    for _, uuid in pairs(equiped) do
+        if type(uuid) == "string" then
+            set[uuid] = true
         end
     end
-    return keys
+    return set
+end
+
+-- ชิ้นที่ใส่อยู่ในช่องนั้น (Weapon / Armor / Hat)
+local function equipedItem(slot)
+    local pack = total and total.Backpack
+    local equiped = pack and pack.equiped
+    if type(equiped) ~= "table" then return nil end
+    local uuid = equiped[slot]
+    if type(uuid) ~= "string" then return nil end
+    local list = have()
+    return list and list[uuid] or nil
+end
+
+local function priceOf(entry)
+    if type(entry) ~= "table" then return nil end
+    return PRICE[entry.ID]
 end
 
 -- อัปครบทุกตัวหรือยัง = ครบแล้วก็ไม่ต้องขายอีก เพราะเงินไม่มีที่ใช้
@@ -126,77 +192,109 @@ end
 -- ============================================
 -- วงจรขาย
 -- ============================================
--- ขายแร่ทิ้งทีละกอง (ส่ง 9999 = ทั้งกอง)
+-- ขายทีละชิ้น (ส่ง 9999 = ทั้งกอง)
 --   เว้นจังหวะเล็กน้อยระหว่างชิ้น กันยิงรัวจนเซิร์ฟเวอร์ปฏิเสธ
 local SELL_GAP = 0.1
+
+local function fireSell(key)
+    local remote = TrySellItemRE or getRemote("Backpack", "TrySellItemRE")
+    if not remote then return false end
+    TrySellItemRE = remote
+    return (pcall(function() remote:FireServer(key, 9999) end))
+end
+
+-- ---------- ตัวที่ 1: ขายแร่ จนกว่าจะอัปเกรดครบ ----------
+local function oreKeys()
+    local list = have()
+    if not list then return nil end
+    local keys = {}
+    for key, entry in pairs(list) do
+        -- แร่เท่านั้น ไม่แตะอาวุธ/เกราะ/หมวก เพราะผู้ใช้อาจจะเก็บไว้ใช้
+        if type(entry) == "table" and entry.Type == "Ore" then
+            keys[#keys + 1] = key
+        end
+    end
+    return keys
+end
 
 local function sellOres()
     local keys = oreKeys()
     if not keys or #keys == 0 then return 0 end
-
-    local remote = TrySellItemRE or getRemote("Backpack", "TrySellItemRE")
-    if not remote then return 0 end
-    TrySellItemRE = remote
-
     local sold = 0
     for _, key in ipairs(keys) do
-        pcall(function() remote:FireServer(key, 9999) end)
-        sold = sold + 1
+        if fireSell(key) then
+            sold = sold + 1
+        end
         task.wait(SELL_GAP)
     end
     return sold
 end
 
--- ย่อเลขให้สั้นลง ราคาของแร่แพงมากถ้าเขียนเต็มบรรทัดจะยาวเกินกรอบ
-local function fmt(n)
-    if not n then return "?" end
-    n = math.floor(n)
-    local abs = math.abs(n)
-    if abs >= 1e9 then
-        return string.format("%.2fB", n / 1e9)
+-- ---------- ตัวที่ 2: ขายของทั้งหมด แต่เลี่ยงของที่ควรเก็บ ----------
+-- เงื่อนไขที่ข้าม (เรียงตามที่ผู้ใช้บอก)
+--   1) ชิ้นที่ใส่อยู่ตอนนี้        -> เทียบ uuid กับค่าใน equiped
+--   2) ของที่มีแค่ชิ้นเดียว        -> entry.Number <= 1
+--   3) ของที่แพงกว่าของที่ใส่อยู่  -> ราคาขายของตัวเอง > ราคาขายของที่ใส่ในช่องเดียวกัน
+--      ถ้ายังไม่ได้ใส่อะไรในช่องนั้น ไม่มีตัวเทียบ -> ใช้แค่เงื่อนไข 1 กับ 2 ต่อไป
+local function sellableKeys()
+    local list = have()
+    if not list then return nil end
+
+    local worn = equipedSet()
+    local keys = {}
+
+    for key, entry in pairs(list) do
+        if type(entry) == "table" then
+            local skip = false
+
+            -- 1) ของที่ใส่อยู่
+            if worn[key] then
+                skip = true
+            end
+
+            -- 2) ของที่มีแค่ชิ้นเดียว
+            if not skip and countOf(entry) <= 1 then
+                skip = true
+            end
+
+            -- 3) ของที่แพงกว่าของที่ใส่อยู่ในช่องเดียวกัน
+            if not skip and EQUIP_SLOTS[entry.Type] then
+                local mine = priceOf(entry)
+                local wornEntry = equipedItem(entry.Type)
+                local theirs = priceOf(wornEntry)
+                if mine and theirs and mine > theirs then
+                    skip = true
+                end
+            end
+
+            if not skip then
+                keys[#keys + 1] = key
+            end
+        end
     end
-    if abs >= 1e6 then
-        return string.format("%.2fM", n / 1e6)
-    end
-    if abs >= 1e3 then
-        return string.format("%.1fK", n / 1e3)
-    end
-    return tostring(n)
+    return keys
 end
+
+local function sellAll()
+    local keys = sellableKeys()
+    if not keys or #keys == 0 then return 0 end
+    local sold = 0
+    for _, key in ipairs(keys) do
+        if fireSell(key) then
+            sold = sold + 1
+        end
+        task.wait(SELL_GAP)
+    end
+    return sold
+end
+
+-- ============================================
+-- ลูปของแต่ละตัว (คนละลูปกัน เปิด-ปิดได้อิสระ)
+-- ============================================
+local SELL_EVERY = 1.5
 
 local sellEnabled = false
 local sellRunning = false
-local labels = {}
-local SELL_EVERY = 1.5
-
--- เขียนข้อความลง Paragraph หนึ่งอัน
---   Paragraph ไม่มี SetValue แต่มี SetDesc ของตัวเฟรมข้างใน (components/window/Element.lua:482)
-local function setDesc(entry, text)
-    if not entry then return end
-    entry.Desc = text
-    pcall(function() entry.ParagraphFrame:SetDesc(text) end)
-end
-
--- สถานะแยกทีละบรรทัด เป็นคนละ Paragraph กัน
---   Desc ของ Paragraph เป็นบรรทัดเดียว ถ้าใส่ \n แล้วยาวเกินกรอบจะถูกตัดทิ้ง
-local function updateLabel()
-    setDesc(labels.Coin, "เหรียญ " .. fmt(getCoin()))
-
-    for _, name in ipairs(STATS) do
-        local lv = readLevel(total or {}, name)
-        if lv >= MAX_LEVEL[name] then
-            setDesc(labels[name], "ครบแล้ว (" .. lv .. "/" .. MAX_LEVEL[name] .. ")")
-        else
-            setDesc(labels[name], lv .. "/" .. MAX_LEVEL[name])
-        end
-    end
-
-    if allStatsMaxed() then
-        setDesc(labels.Status, "อัปครบทุกสถิติแล้ว ไม่ขายอีก")
-    else
-        setDesc(labels.Status, "กำลังขายแร่ในกระเป๋า")
-    end
-end
 
 local function sellLoop()
     while sellEnabled do
@@ -207,7 +305,6 @@ local function sellLoop()
             if not allStatsMaxed() then
                 sellOres()
             end
-            updateLabel()
             task.wait(SELL_EVERY)
         end
     end
@@ -225,6 +322,32 @@ local function setSell(value)
     end
 end
 
+local allEnabled = false
+local allRunning = false
+
+local function sellAllLoop()
+    while allEnabled do
+        if not refresh() then
+            task.wait(1)
+        else
+            sellAll()
+            task.wait(SELL_EVERY)
+        end
+    end
+    allRunning = false
+end
+
+local function setSellAll(value)
+    allEnabled = value == true
+    if allEnabled then
+        refresh()
+        if not allRunning then
+            allRunning = true
+            task.spawn(sellAllLoop)
+        end
+    end
+end
+
 -- ============================================
 -- register: ผูกกับแถบของ WindUI
 -- ============================================
@@ -235,21 +358,20 @@ function Sell.register(context)
     local section = tab:Section({Title = "ขายของอัตโนมัติ", Opened = true})
     if section then
         section:Toggle({
-            Title = "เปิดขายอัตโนมัติ",
-            Desc = "ขายแร่ทิ้งเรื่อย ๆ จนกว่าจะอัปเกรดครบทั้ง 3 สถิติ แล้วจะหยุดขายเอง",
+            Title = "ขายแร่จนกว่าจะอัปเกรดครบ",
+            Desc = "ขายแร่ในกระเป๋าอัตโนมัติ ถ้าอัปเกรดครบทั้ง 3 สถิติแล้วจะไม่ขาย",
             Value = false,
             Callback = setSell,
         })
-
-        labels.Coin = section:Paragraph({Title = "เหรียญ", Desc = "..."})
-        for _, name in ipairs(STATS) do
-            labels[name] = section:Paragraph({Title = STAT_NAME[name], Desc = "..."})
-        end
-        labels.Status = section:Paragraph({Title = "สถานะ", Desc = "..."})
+        section:Toggle({
+            Title = "ขายของอัตโนมัติ",
+            Desc = "ขายของทุกชิ้น ยกเว้นของที่ใส่อยู่ ของที่มีแค่ชิ้นเดียว และของที่แพงกว่าของที่ใส่อยู่",
+            Value = false,
+            Callback = setSellAll,
+        })
     end
 
     refresh()
-    updateLabel()
 end
 
 return Sell
