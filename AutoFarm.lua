@@ -1,4 +1,4 @@
--- Version 10.41
+-- Version 10.50
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -886,14 +886,24 @@ function AutoFarm.register(context)
 
     local farmSection = tab:Section({Title = "Farm", Opened = true})
     if farmSection then
-        farmSection:Button({Title = "Stage: " .. (selectedStage or STAGE_NAMES[1] or ""), Callback = function()
-            local idx = 0
-            for i, n in ipairs(STAGE_NAMES) do if n == selectedStage then idx = i; break end end
-            if idx == 0 or idx >= #STAGE_NAMES then idx = 1 else idx = idx + 1 end
-            selectedStage = STAGE_NAMES[idx]
-            local disp = (selectedStage or ""):gsub("_", " ")
-            pcall(function() windUI:Notify({Title="เลือก Stage", Content=disp, Duration=2}) end)
-        end})
+        farmSection:Dropdown({
+            Title = "เลือก Stage",
+            Desc = "เลือกด่านที่ต้องการฟาร์ม",
+            Values = display,
+            Value = 1,
+            Callback = function(val)
+                local idx = 0
+                for i, d in ipairs(display) do
+                    if d == val then
+                        idx = i
+                        break
+                    end
+                end
+                if idx ~= 0 then
+                    selectedStage = STAGE_NAMES[idx]
+                end
+            end,
+        })
         farmSection:Toggle({Title = "เริ่ม Auto Farm", Desc = "ฟาร์มรอบอัตโนมัติ (ไม่วาร์ปไปหาของ)", Value = false, Callback = setRunning})
     end
 end
