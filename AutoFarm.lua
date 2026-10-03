@@ -1,4 +1,4 @@
--- Version 11.26
+-- Version 11.43
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -596,6 +596,27 @@ local currentArea = nil
 -- แต่ไม่ต้องถี่เกินนี้ เพราะตอนตั้งค่าใหม่ เกมเริ่มนับการเทรนใหม่จากศูนย์
 local TRAIN_EVERY = 0.2
 
+-- ============================================
+-- กันภาพเบลอ
+-- ============================================
+-- เกมเปิด BlurEffect ตอนเปลี่ยนกล้อง/เข้า-ออกจุดเทรน (UiController.lua)
+--   ถ้าปล่อยไว้จะเบลอวนไป จึงต้องปิดให้ทันทีทุกรอบของลูป
+-- วางไว้ก่อน trainLoop เพราะ Lua มองไม่เห็น local function ที่ประกาศ "หลัง" จุดที่เรียก
+--   (ถ้าเรียกก่อนประกาศ จะได้ nil แล้ว error "attempt to call a nil value"
+--    ทำให้ task.spawn(trainLoop) ตายทันที = กด Auto Train แล้วไม่เกิดอะไรเลย)
+local function clearBlur()
+    pcall(function()
+        local Lighting = game:GetService("Lighting")
+        local Blur = Lighting:FindFirstChild("Blur")
+        if Blur then
+            Blur.Enabled = false
+            Blur.Size = 0
+        end
+        local DOF = Lighting:FindFirstChild("DepthOfField")
+        if DOF then DOF.Enabled = false end
+    end)
+end
+
 local function trainLoop()
     while trainEnabled do
         clearBlur()
@@ -708,19 +729,6 @@ local function notify(title, desc)
     end)
 end
 
-
-local function clearBlur()
-    pcall(function()
-        local Lighting = game:GetService("Lighting")
-        local Blur = Lighting:FindFirstChild("Blur")
-        if Blur then
-            Blur.Enabled = false
-            Blur.Size = 0
-        end
-        local DOF = Lighting:FindFirstChild("DepthOfField")
-        if DOF then DOF.Enabled = false end
-    end)
-end
 
 local function runRound()
     -- 1) รอจนฟื้นฟู (ถ้าตายอยู่ ไม่ต้องทำอะไรรอบนี้)
