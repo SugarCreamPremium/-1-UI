@@ -1,4 +1,4 @@
--- Version 5.39
+-- Version 5.47
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
@@ -517,6 +517,14 @@ local function warpToTrain(areaId)
     end)
 end
 
+-- อ่านค่าจุดที่ยืนอยู่เป็นตัวเลขเสมอ
+--   เกมตั้ง attribute นี้เป็น string (มาจากชื่อ Part) ดูได้จาก BalanceUtils.lua:99
+--     ที่ต้อง tonumber(Attribute) ก่อนเอาไปคำนวณ
+--   ถ้าเอามาเทียบตรง ๆ กับเลข แล้ว "9" ~= 9 จะทำให้วาร์ปซ้ำทุกรอบ
+local function currentTrainArea()
+    return tonumber(player:GetAttribute("AutoTrainAreaID"))
+end
+
 -- เข้าเกมจะเริ่มเทรนให้เองเมื่อ attribute นี้เป็นเลขจุดที่ยืนอยู่
 --   TrainCTRL.lua:55-66 ฟัง GetAttributeChangedSignal("AutoTrainAreaID")
 --     ได้ค่า -> StartAutoTrain() ยิง Train/IntoAutoTrainRE แล้วล็อกตัวละครไว้บน DUMMY เอง
@@ -526,7 +534,7 @@ end
 --   -> ตั้งให้ตรงกับจุดที่วาร์ปไปแทน ผลเหมือนกันทุกอย่าง
 local function enterTrainArea(areaId)
     if not warpToTrain(areaId) then return false end
-    if player:GetAttribute("AutoTrainAreaID") ~= areaId then
+    if currentTrainArea() ~= areaId then
         player:SetAttribute("AutoTrainAreaID", areaId)
     end
     return true
@@ -543,8 +551,9 @@ local function trainLoop()
             task.wait(1)
         else
             local best = bestTrainArea(getRebirth())
-            -- ย้ายเมื่อจุดที่ดีที่สุดเปลี่ยนไป หรือเมื่อเกมหลุด attribute ทิ้ง
-            if best and (best ~= currentArea or player:GetAttribute("AutoTrainAreaID") ~= best) then
+            -- ย้างเมื่อจุดที่ดีที่สุดเปลี่ยนไป หรือเมื่อเกมหลุด attribute ทิ้ง
+            -- เทียบด้วยตัวเลขทั้งสองฝั่ง เพราะเกมเก็บค่าเป็น string
+            if best and (best ~= currentArea or currentTrainArea() ~= best) then
                 currentArea = best
                 enterTrainArea(best)
             end
@@ -782,7 +791,7 @@ function AutoFarm.register(context)
                 else
                     -- ปิดแล้วต้องเอาตัวละครออกจากจุดเทรนด้วย ไม่งั้นเกมจะล็อกตัวละครไว้บน DUMMY ตลอดไป
                     --   (TrainCTRL.lua:61-62  attribute เป็น nil -> ExitAutoTrain)
-                    if currentArea and player:GetAttribute("AutoTrainAreaID") == currentArea then
+                    if currentArea and currentTrainArea() == currentArea then
                         player:SetAttribute("AutoTrainAreaID", nil)
                     end
                     currentArea = nil
