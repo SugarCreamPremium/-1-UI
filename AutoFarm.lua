@@ -1,5 +1,4 @@
--- Version 5.47
-print("Test")
+-- Version 6.04
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
@@ -530,11 +529,13 @@ end
 --   TrainCTRL.lua:55-66 ฟัง GetAttributeChangedSignal("AutoTrainAreaID")
 --     ได้ค่า -> StartAutoTrain() ยิง Train/IntoAutoTrainRE แล้วล็อกตัวละครไว้บน DUMMY เอง
 --   BalanceUtils.lua:163 ใช้ attribute เดียวกันนี้คิดตัวคูณดาเมจตอนเทรน
---   การยืนแค่อยู่อาจไม่พอ เพราะเกมต้องการกดปุ่ม Allow ในหน้าต่างของจุดนั้น
 --   (AutoTrainAreaGUI.lua:50  Rebirth_4:WaitForChild("Allow"))
---   -> ตั้งให้ตรงกับจุดที่วาร์ปไปแทน ผลเหมือนกันทุกอย่าง
-local function enterTrainArea(areaId)
-    if not warpToTrain(areaId) then return false end
+--
+-- needWarp = false ใช้ตอน "กลับเข้าจุดเดิม" เพราะเกมล้าง attribute เอง
+--   ถ้าวาร์ปทุกครั้งที่ attribute หาย ตัวละครจะถูกดึงออกจาก DUMMY ทุกวินาที
+--   ทำให้เทรนได้ไม่กี่ทีแล้วต้องเริ่มใหม่ แค่ตั้ง attribute ซ้ำก็พอแล้ว
+local function enterTrainArea(areaId, needWarp)
+    if needWarp and not warpToTrain(areaId) then return false end
     if currentTrainArea() ~= areaId then
         player:SetAttribute("AutoTrainAreaID", areaId)
     end
@@ -552,11 +553,13 @@ local function trainLoop()
             task.wait(1)
         else
             local best = bestTrainArea(getRebirth())
-            -- ย้างเมื่อจุดที่ดีที่สุดเปลี่ยนไป หรือเมื่อเกมหลุด attribute ทิ้ง
-            -- เทียบด้วยตัวเลขทั้งสองฝั่ง เพราะเกมเก็บค่าเป็น string
-            if best and (best ~= currentArea or currentTrainArea() ~= best) then
+            if best and best ~= currentArea then
+                -- เปลี่ยนจุด = วาร์ปไปจุดใหม่ (วาร์ปแค่ครั้งเดียวต่อจุด)
                 currentArea = best
-                enterTrainArea(best)
+                enterTrainArea(best, true)
+            elseif best and currentTrainArea() ~= best then
+                -- กลับเข้าจุดเดิมที่เกมล้าง attribute ทิ้ง = ตั้งคืนค่า ไม่วาร์ปซ้ำ
+                enterTrainArea(best, false)
             end
             task.wait(TRAIN_EVERY)
         end
