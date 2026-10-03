@@ -1,4 +1,4 @@
--- Version 4.30
+-- Version 5.19
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
@@ -76,6 +76,38 @@ local function getRemote(folderName, remoteName)
 end
 
 local TryRebirthRE = getRemote("Rebirth", "TryRebirthRE")
+
+-- มี DevProduct/Pem ให้ซื้อจุดเทรนหรือเปล่า = ดึงจาก Pem store ในโปรไฟล์ผู้เล่น
+--   PemData.isHavePem -> Pem[name]   (LocalData/PemData.lua:31-37)
+--   Pem มาจาก Profile/GetTotalDataRF (โหลดตอนแรกเหมือน Claim.lua)
+-- ถ้าอ่านไม่ได้ = คืน "ไม่รู้" ให้ผู้ใช้เลือกเองทีหลัง แทนที่จะเดาแล้วเด้งให้จ่าย
+local IsPlayerHavePemRF = getRemote("Pem", "IsPlayerHavePemRF")
+local pemCache = nil
+
+local function refreshPem()
+    if IsPlayerHavePemRF then
+        local ok, value = pcall(function() return IsPlayerHavePemRF:InvokeServer() end)
+        if ok and type(value) == "table" then
+            pemCache = value
+            return true
+        end
+    end
+
+    local rf = getRemote("Profile", "GetTotalDataRF")
+    if not rf then return false end
+    local ok, data = pcall(function() return rf:InvokeServer() end)
+    if ok and type(data) == "table" and type(data.Pem) == "table" then
+        pemCache = data.Pem
+        return true
+    end
+    return false
+end
+
+-- คืน true = มีสิทธิ์ / false = ไม่มี / nil = ยังไม่รู้ (อ่านข้อมูลไม่ได้)
+local function hasPem(name)
+    if type(pemCache) ~= "table" then return nil end
+    return pemCache[name] and true or false
+end
 
 -- ============================================
 -- รายชื่อสเตจ
@@ -441,7 +473,9 @@ end
 --
 -- เข้าจุดได้เมื่อ จำนวน Rebirth ที่มี >= Rebirth ที่จุดนั้นต้องใช้
 --   (AutoTrainAreaGUI.lua:67-80  CheckCanIntoTrainArea: GetNeedRebirth(n) <= Eco.rebirth.Value)
---   จุดที่ต้องซื้อเงินจริง (IsPay) เช็คเองไม่ได้ว่าซื้อแล้วหรือยัง เลยข้ามไป
+--   จุดที่ต้องซื้อเงินจริง (IsPay = true) ต้องมี PEM "AutoTrainArea_9" เป็นต้น
+--     ถ้าไม่มี PEM -> ไม่เข้า เพื่อลดความเสี่ยงยิงเข้าแล้วเด้งให้จ่าย
+--   (PemData.isHavePem และ Shop.lua ใช้ชื่อเดียวกัน)
 --
 -- ยืนถึงแค่ไหน = จุดที่เลขสูงสุดที่เข้าได้ ค่ายิ่งสูงยิ่งได้ตัวคูณเทรนสูง
 --   (Utils/BalanceUtils.lua:163  GetTrainAreaBasic เอา Basic ของจุดที่ยืนอยู่ไปคูณดาเมจ)
@@ -484,13 +518,33 @@ local function bestTrainArea(rebirth)
     if not rebirth then return nil end
     local bestIndex = nil
     local bestBasic = -1
+    -- อ่าน Pem ก่อนเข้าตัดสินใจ
+    if type(pemCache) ~= "table" then
+        refreshPem()
+    end
+
     for index = 1, #TRAIN_AREA do
         local area = TRAIN_AREA[index]
         if area.NeedRebirth <= rebirth then
-            local basic = area.Basic or 0
-            if bestIndex == nil or basic > bestBasic or (basic == bestBasic and index > bestIndex) then
-                bestBasic = basic
-                bestIndex = index
+            -- จุดต้องซื้อด้วย Robux (IsPay)
+            if area.IsPay then
+                local pemName = "AutoTrainArea_" .. index
+                local has = hasPem(pemName)
+                if has ~= true then
+                    -- ไม่มีหรือยังไม่รู้ -> ข้ามจุดนี้ (ป้องกันเด้งให้จ่าย Robux)
+                else
+                    local basic = area.Basic or 0
+                    if bestIndex == nil or basic > bestBasic or (basic == bestBasic and index > bestIndex) then
+                        bestBasic = basic
+                        bestIndex = index
+                    end
+                end
+            else
+                local basic = area.Basic or 0
+                if bestIndex == nil or basic > bestBasic or (basic == bestBasic and index > bestIndex) then
+                    bestBasic = basic
+                    bestIndex = index
+                end
             end
         end
     end
@@ -720,6 +774,7 @@ end
 local function setTrain(value)
     trainEnabled = value == true
     if trainEnabled and not trainRunning then
+        refreshPem()
         trainRunning = true
         task.spawn(trainLoop)
     end
