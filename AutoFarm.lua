@@ -1,4 +1,4 @@
--- Version 4.23
+-- Version 4.30
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
@@ -482,13 +482,19 @@ end
 -- จุดที่ดีที่สุดที่เข้าได้ คืนเลขจุด หรือ nil ถ้าไม่มีจุดไหนเข้าได้เลย
 local function bestTrainArea(rebirth)
     if not rebirth then return nil end
-    for index = #TRAIN_AREA, 1, -1 do
+    local bestIndex = nil
+    local bestBasic = -1
+    for index = 1, #TRAIN_AREA do
         local area = TRAIN_AREA[index]
         if area.NeedRebirth <= rebirth then
-            return index
+            local basic = area.Basic or 0
+            if bestIndex == nil or basic > bestBasic or (basic == bestBasic and index > bestIndex) then
+                bestBasic = basic
+                bestIndex = index
+            end
         end
     end
-    return nil
+    return bestIndex
 end
 
 -- วาร์ปไปยืนกลางจุดเทรนนั้น
