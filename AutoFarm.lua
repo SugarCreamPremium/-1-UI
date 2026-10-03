@@ -1,8 +1,9 @@
--- Version 6.48
+-- Version 7.40
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
--- วงจรของสเตจ: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
--- อีกส่วนคือ Auto Train (ยืนเทรนในจุดที่ดีที่สุดตามจำนวน Rebirth) และ Auto Rebirth
+-- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
+--   ไม่ต้องวาร์ปไปที่สเตจ เกมไม่ได้เช็คตำแหน่งตัวละครในสายทางนี้เลย (ดูหัว runRound)
+-- อีกส่วนคือ Auto Train (ตั้งจุดเทรนที่ดีที่สุดโดยไม่ต้องยืนตรงจุด) และ Auto Rebirth
 --
 -- กลไกของเกมที่ใช้ (อ่านจากดัมป์):
 --   เข้า:  HumanoidRootPart ทับ part ใน StageMap.AreaPart -> Touched
@@ -137,37 +138,6 @@ end
 local function getHRP()
     local char = player.Character
     return char and char:FindFirstChild("HumanoidRootPart")
-end
-
--- ============================================
--- วาร์ปไปยืนใกล้สเตจนั้น
--- ============================================
--- ใช้ EnemyPoint ของสเตจนั้นเป็นจุดหมาย เพราะเป็นจุดเดียวกับที่มอนของสเตจนั้นเกิด
--- AreaPart มีแค่ Stage_1..Stage_7 แต่ EnemyPoint มีครบ 27 สเตจ
---   -> สเตจที่ 8 ขึ้นไปไม่มีพื้นที่ให้เหยียบ ใช้ EnemyPoint แทนจึงได้ครบ
-local function warpToStage(stageName)
-    local char = player.Character
-    local hrp = getHRP()
-    if not char or not hrp then return false end
-
-    local target = nil
-    local points = getMapChild("EnemyPoint")
-    local stagePoints = points and points:FindFirstChild(stageName)
-    if stagePoints then
-        local first = stagePoints:GetChildren()[1]
-        if first then target = first.CFrame end
-    end
-    if not target then
-        local areas = getMapChild("AreaPart")
-        local area = areas and areas:FindFirstChild(stageName)
-        if area then target = area.CFrame end
-    end
-    if not target then return false end
-
-    return pcall(function()
-        -- +5 ขึ้นไปกันตกทะลุพื้น การเขียน CFrame โดยตรงสั่นนิดหน่อยแต่จบในบล็อกเดียว
-        char:PivotTo(CFrame.new(target.Position + Vector3.new(0, 5, 0)) * target.Rotation)
-    end)
 end
 
 -- ============================================
@@ -394,6 +364,14 @@ end
 --   (OreUtils.lua:62-66  if UpgradeData.GetMaxNum("OrePack") <= v1 then ... return end)
 --   แปลว่า prompt ยัง Enabled อยู่ = ยิงซ้ำก็ไม่มีอะไรเกิดขึ้น
 --   -> ต้องเช็คจำนวนในกระเป๋าก่อนยิงทุกชิ้น ไม่งั้นจะยิงเปล่า 1.5 วิ ทีละชิ้นจนครบ
+--
+-- ระยะที่ ProximityPrompt ของเกมยอมให้ยิง
+--   OreDropUtils.lua:110-111 ตั้ง MaxIndicatorDistance = 10 และไม่ได้แตะ MaxActivationDistance
+--     ซึ่งค่าเริ่มต้นของ ProximityPrompt คือ 10 เท่ากัน
+--   ของตกที่จุดที่มอนตาย (StageUtils.HurtEnemy:308 เก็บ DeadCF จากจุดตายของมอน)
+--     ซึ่งอยู่ที่ EnemyPoint ของสเตจ ไม่ใช่ตรงที่เรายืน
+--   -> ถ้าไม่วาร์ปไปหา ของที่ตกจะอยู่ไกลเกินกดไม่ถึง ต้องปล่อยให้เกมจัดการตอนออกแทน
+local ORE_PICK_RANGE = 12
 local function collectOres()
     local cache = getOreCache()
     if not cache then return end
@@ -415,18 +393,32 @@ local function collectOres()
 
     -- 2) เก็บทีละชิ้นจากแพงสุด หยุดทันทีที่กระเป๋าเต็ม
     --    ถ้ากระเป๋าพอทั้งหมดจะเก็บครบทุกชิ้นเท่ากัน
+    --    ข้ามชิ้นที่อยู่ไกลเกินกดไม่ถึง ไม่งั้นจะเสียเวลารอ 1.5 วิ ทีละชิ้นเปล่า ๆ
+    --    ของที่ข้ามจะถูกเกมเก็บให้เองตอน ExitFight (ClaimedAllOreRE)
+    local hrp = getHRP()
     for _, ore in ipairs(ores) do
         -- กระเป๋าเต็มแล้ว -> เก็บต่อไม่ได้อยู่ดี ให้ข้ามไป เกมจะจัดการที่เหลือตอน ExitFight
         local count, max = getPack()
         if count and max and count >= max then break end
 
-        local prompt = findOrePrompt(ore)
-        if prompt and prompt.Enabled then
-            fireAndWait(prompt, ore)
-            if fireError then
-                -- ยิงไม่ขึ้น = วิธีที่มีใช้ไม่ได้ ไม่ต้องรอ 1.5 วิ ให้ครบทุกชิ้นแล้ว
-                -- ปล่อยให้รอบนี้จบเร็วแล้วไปรอบต่อไป
-                break
+        -- ข้ามชิ้นที่อยู่ไกลเกินกดไม่ถึง
+        --   ใช้ if เหมือนเดิม ไม่ใช้ continue เพราะเป็นคีย์เวิร์ดเฉพาะ Luau
+        --   (ไฟล์นี้เลี่ยงไว้ทั้งไฟล์ เพราะต้องให้ของเปิดใน executor รุ่นเก่าได้ด้วย)
+        local tooFar = false
+        if hrp then
+            local pos = ore.PrimaryPart and ore.PrimaryPart.Position or ore:GetPivot().Position
+            tooFar = (pos - hrp.Position).Magnitude > ORE_PICK_RANGE
+        end
+
+        if not tooFar then
+            local prompt = findOrePrompt(ore)
+            if prompt and prompt.Enabled then
+                fireAndWait(prompt, ore)
+                if fireError then
+                    -- ยิงไม่ขึ้น = วิธีที่มีใช้ไม่ได้ ไม่ต้องรอ 1.5 วิ ให้ครบทุกชิ้นแล้ว
+                    -- ปล่อยให้รอบนี้จบเร็วแล้วไปรอบต่อไป
+                    break
+                end
             end
         end
     end
@@ -623,6 +615,17 @@ end
 
 -- หนึ่งรอบของการฟาร์ม คืนทุกทางที่ "รอบนี้ไม่สำเร็จ"
 -- แยกจาก farmLoop เพื่อใช้ return แทน continue (continue เป็นคีย์เวิร์ดเฉพาะ Luau)
+--
+-- ไม่วาร์ปไปที่สเตจเลย เพราะเกมไม่ได้เช็คตำแหน่งตัวละครในสายทางนี้เลย:
+--   1) เข้า:  StageManager.client.lua:67 ฟังแค่ attribute "StageID" เปลี่ยน
+--           แล้วเรียก StartFight -> StartStage -> CreateStageEnemys เรียงอ่านจากนั้น
+--   2) เกิด: CreateStageEnemys:253-258 เอาพิกัดมาจาก EnemyPoint.<สเตจ>.<เลข>.CFrame
+--           ตายตัว ไม่เคยอ้างตำแหน่งผู้เล่น -> มอนเกิดได้แม้เรายืนที่ไหนก็ตาม
+--   3) ตี:   EnemyHitBE เป็น BindableEvent ฝั่ง client -> StageUtils.HurtEnemy:287
+--           -> EnemyCTRL.HurtEnemy:188 -> HPCTRL.DamageOnce ไม่มีเช็คระยะเลย
+--   4) ของ: HurtEnemy:308 เก็บ DeadCF = ตำแหน่งที่มอนตาย (จุดเกิดมอน)
+--           ของจึงตกที่นั่น ไม่ใช่ที่เรายืน
+-- ผลคือไม่ต้องเดินไปไหนเลย ทั้งรอบอยู่ที่เดิม ไม่มีจังหวะกระตุกจากการวาร์ป
 local function runRound()
     -- 1) รอจนฟื้นฟู (ถ้าตายอยู่ ไม่ต้องทำอะไรรอบนี้)
     if player:GetAttribute("Dead") then
@@ -632,27 +635,20 @@ local function runRound()
     -- 2) รอตัวละครพร้อม
     if not waitUntil(function() return getHRP() ~= nil end, 15) then return end
 
-    -- 3) เคลียร์สเตจเก่าก่อนวาร์ป
+    -- 3) เคลียร์สเตจเก่าก่อนเข้าใหม่
     --    ExitFight ล้าง EnemyTab ของทุกสเตจ (StageUtils.lua:186-188)
     --      ถ้าค้างค่าไว้แล้วเข้าสเตจใหม่ EnemyTab จะถูกล้างทับตอน ExitFight
     --      ทำให้ EnemyHitBE ยิงแล้วไม่มีใครรับ = ไม่มีดาเมจเลย
-    --    ส่ง skipWarp = true เพื่อไม่ให้โดนวาร์ปกลับจุดเกิดตรงนี้
-    --    เพราะเรากำลังจะวาร์ปไปสเตจอยู่ดี
+    --    ส่ง skipWarp = true เพราะเราไม่วาร์ปไปไหนแล้ว ไม่ต้องโดนลากกลับจุดเกิด
     if player:GetAttribute("IntoFight") then
         exitFight(true, true)
         task.wait(1.5)
     end
 
-    -- 4) วาร์ปไปที่สเตจที่เลือก
-    if not warpToStage(selectedStage) then
-        task.wait(1)
-    end
-    task.wait(0.4)
-
-    -- 5) เข้าสเตจ
+    -- 4) เข้าสเตจ (ตั้ง attribute อย่างเดียว ไม่วาร์ป)
     enterStage(selectedStage)
 
-    -- 6) รอมอนเกิด (สูงสุด 10 วิ)
+    -- 5) รอมอนเกิด (สูงสุด 10 วิ)
     --    ถ้าไม่มีมอนเกิด = สเตจนี้เล่นไม่ได้ เช่น ยังไม่ปลดล็อก
     --    (CreateStageEnemys จะเตือน "缺少敌人点位" แล้ว return ถ้าไม่มี EnemyPoint)
     if not waitUntil(function() return countEnemies() > 0 end, 10) then
@@ -663,7 +659,8 @@ local function runRound()
         return
     end
 
-    -- 7) ฆ่ามอนวนจนของเริ่มตก = สเตจจบแล้ว
+    -- 6) ฆ่ามอนวนจนของเริ่มตก = สเตจจบแล้ว
+    --    ยิงจากไหนก็ได้ EnemyHitBE ไม่เช็คระยะ (ดูหัว runRound)
     --    ต้องยิงไปเรื่อย ๆ ไม่ใช่ยิงรอบเดียว เพราะ FinishStage
     --    จะสร้างของต่อเมื่อทุกตัวใน EnemyTab ตายครบเท่านั้น
     --    (ยิงครั้งเดียวแล้วไปรอของ = ค้างจน timeout เพราะมอนที่เหลือยังไม่ตาย)
@@ -684,23 +681,26 @@ local function runRound()
     if not done then
         -- หมดเวลาแล้วของยังไม่ตก = เซิร์ฟเวอร์ไม่ยอมให้ของ หรือ EnemyTab ถูกล้างจนยิงไม่เข้า
         if player:GetAttribute("IntoFight") then
-            exitFight(false, false)
+            exitFight(false, true)
         end
         task.wait(2)
         return
     end
 
-    -- 8) เก็บของ: แพงสุดก่อน จนกว่ากระเป๋าจะเต็ม (หรือเก็บครบถ้าพอ)
+    -- 7) เก็บของ: แพงสุดก่อน จนกว่ากระเป๋าจะเต็ม (หรือเก็บครบถ้าพอ)
+    --    ของที่อยู่ไกลเกิน ORE_PICK_RANGE จะถูกข้าม รอข้อ 8 ให้เกมจัดการแทน
     collectOres()
     task.wait(0.5)
 
-    -- 9) ออกจากสเตจ -> ExitFight เก็บของที่เหลือให้เอง แล้ววาร์ปกลับจุดเกิด
-    --    (StageUtils.lua:189-197: ClaimedAllOreRE:FireServer -> CleanOres -> ToSpawn)
+    -- 8) ออกจากสเตจ -> ExitFight ยิง ClaimedAllOreRE ให้เซิร์ฟเวอร์
+    --    แล้วล้างของที่เหลือทิ้ง (StageUtils.lua:189-197)
+    --    ของที่เราเก็บเองไม่ทันจะถูก ClaimedAllOreRE เก็บให้ทั้งหมด
+    --    skipWarp = true เพราะเราไม่วาร์ปไปไหน ไม่ต้องโดนลากกลับจุดเกิด
     if player:GetAttribute("IntoFight") then
-        exitFight(true, false)
+        exitFight(true, true)
     end
 
-    -- 10) หน่วง 1 วิ ก่อนเริ่มรอบใหม่
+    -- 9) หน่วง 1 วิ ก่อนเริ่มรอบใหม่
     task.wait(1)
 end
 
@@ -828,8 +828,8 @@ function AutoFarm.register(context)
 
     section:Toggle({
         Title = "เริ่ม Auto Farm",
-        Desc = "หยุดกลางคันได้ แต่ถ้าหยุดตอนกำลังอยู่ในสเตจ ตัวละครจะยังอยู่ในนั้น "
-            .. "กดปุ่มกลับ (Back) เองถ้าจะออก",
+        Desc = "สั่งให้มอนเกิด ฆ่า รอของตก แล้วเก็บ โดยไม่ต้องวาร์ปไปที่สเตจ "
+            .. "ตัวละครอยู่ที่เดิมตลอด ไม่ต้องเดินไปไหน",
         Value = false,
         Callback = function(value)
             if value then
