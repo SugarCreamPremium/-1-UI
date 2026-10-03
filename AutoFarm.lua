@@ -1,4 +1,4 @@
--- Version 11.50
+-- Version 12.23
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -330,15 +330,17 @@ end
 local ORE_NEAR_RANGE = 12
 
 -- ============================================
--- ดึงของมาวางข้างตัวละคร เพื่อให้กด prompt ได้โดยไม่ต้องวาร์ปไปหา
+-- ดึงของมาวางข้างตัวละคร (ใช้เป็นทางสำรองเท่านั้น)
 -- ============================================
 -- ของตกที่จุดที่มอนตาย ซึ่งอยู่ที่ EnemyPoint ของสเตจ ไม่ใช่ที่เรายืน
 --   (StageUtils.HurtEnemy:308 เก็บ DeadCF จากจุดตายของมอน)
 -- แต่ตัวที่อยู่ใน OreCache เป็นแค่ clone ฝั่ง client ที่เกมสร้างเอง
 --   (OreDropUtils.lua:52-56  Model:Clone() -> PivotTo -> Parent = OreCache)
--- เกมไม่เคยเช็คตำแหน่งของตอนให้ของ มันเอาแค่ UUID ไปขอ
---   (OreUtils.lua:59-74  callback -> PickupOreBE:Fire() -> GetOreRF:InvokeServer(uuid))
--- ย้ายโมดเดลมาวางใกล้ตัวละคร ก็เท่ากับ "ไปเก็บของด้วยตัวเอง" โดยไม่ต้องขยับตัวละครเลย
+--
+-- เดิมใช้วิธีนี้เป็นทางหลัก แต่ไม่จำเป็น เพราะ callback ของเกมไม่เช็คระยะเลย
+--   (OreUtils.lua:59-74  ไล่ FlyToPlayer -> PickupOreBE:Fire() -> GetOreRF:InvokeServer(uuid)
+--    เอาแค่ UUID ไปขอของ ไม่มีการเทียบตำแหน่งตัวละครที่ไหนเลย)
+--   ทางหลักตอนนี้คือ prepPrompt ข้างล่าง ย้ายของแค่เผื่อกรณีที่เอนจินคุมระยะตัวเอง
 local function pullOreNear(ore)
     local hrp = getHRP()
     if not hrp then return false end
@@ -366,35 +368,6 @@ local function oreIsNear(ore)
     return (pos - hrp.Position).Magnitude <= ORE_NEAR_RANGE
 end
 
--- ============================================
--- เก็บของ 1 ชิ้น -> คืน true ถ้าของเข้าตัวจริง
--- ============================================
--- ลอง fireproximityprompt ก่อน แต่ตัวนี้ข้ามระยะได้หรือไม่ขึ้นอยู่กับ executor
---   ถ้ามันมีอยู่แต่ทำงานเงียบ ๆ ไม่มี error -> ทางแรกใน firePrompt จะไม่ throw
---     และทางสำรอง (กด prompt เอง) ก็ไม่ถูกเรียก ของก็เลยไม่เข้าตัวโดยไม่มีอะไรฟ้อง
---   -> ยิงเสร็จต้องเช็คว่าของหายไปจริงไหม ถ้ายังอยู่ค่อยลองวิธีที่สองเอง
-local function pickOre(ore)
-    local prompt = findOrePrompt(ore)
-    if not prompt or not prompt.Enabled then return false end
-
-    firePrompt(prompt)
-    if waitOreGone(ore, 0.4) then return true end
-
-    -- วิธีที่สอง: กด prompt เอง ต้องอยู่ใกล้พอถึงจะผ่าน (เราดึงมาใกล้แล้ว)
-    local ok = pcall(function()
-        prompt.HoldDuration = 0
-        prompt:InputHoldBegin()
-        task.wait(0.05)
-        prompt:InputHoldEnd()
-    end)
-    if not ok then
-        if not fireError then fireError = "InputHoldBegin" end
-        return false
-    end
-
-    return waitOreGone(ore, 0.6)
-end
-
 -- อ่านจำนวนของในกระเป๋า / ขนาดกระเป๋า -> count, max
 -- ============================================
 -- ตัวเลขจริงอยู่ในตัวแปร module-local ของ LeftInfoGUI (u66) อ่านตรง ๆ ไม่ได้
@@ -416,6 +389,150 @@ local function getPack()
     local count, max = tostring(title.Text):match("^(%d+)%s*/%s*(%d+)$")
     if not count then return nil, nil end
     return tonumber(count), tonumber(max)
+end
+
+-- ============================================
+-- ทางจริง ๆ ที่ไม่มีระยะ: เรียก callback ของเกมตรง ๆ ไม่ผ่าน ProximityPrompt เลย
+-- ============================================
+-- เกมต่อ callback ไว้บน prompt.Triggered ตอนสร้างของทิ้ง
+--   (OreDropUtils.lua:104  v2.Triggered:Connect(a1.PPButtonCallback))
+-- getconnections(signal) คืน callback ทั้งหมดที่ต่ออยู่กับ signal นั้น
+--   เอามาเรียกตรง ๆ = ข้ามระบบ prompt ทั้งระบบ
+--   ไม่มีระยะ ไม่มี HoldDuration ไม่มี Enabled ไม่มีอะไรมาตรวจอีก
+--   เก็บจากไกลแค่ไหนก็ได้ ไม่ต้องขยับอะไรทั้งสิ้น
+local function getTriggerHandlers(signal)
+    -- ปกติ executor จะมีเป็น global ตรง ๆ (Synapse / Fluxus / Delta / Solara ฯลฯ)
+    --   อ่านแบบเป็น global ปกติ ไม่ใช่ rawget(_G, ...) เพราะบางตัวอยู่ในสภาพแวดล้อมอื่น
+    local getter = nil
+    if type(getconnections) == "function" then
+        getter = getconnections
+    end
+    if not getter and type(getgenv) == "function" then
+        local okG, g = pcall(getgenv)
+        if okG and type(g) == "table" then
+            if type(g.getconnections) == "function" then
+                getter = g.getconnections
+            elseif type(g.hook) == "table" and type(g.hook.getconnections) == "function" then
+                getter = g.hook.getconnections
+            end
+        end
+    end
+    if type(getter) ~= "function" then return nil end
+
+    local ok, conns = pcall(getter, signal)
+    if not ok or type(conns) ~= "table" then return nil end
+
+    local out = {}
+    for _, c in ipairs(conns) do
+        if type(c) == "table" then
+            local fn = c.Function or c.f
+            if type(fn) == "function" then
+                out[#out + 1] = fn
+            end
+        end
+    end
+    if #out == 0 then return nil end
+    return out
+end
+
+-- เรียก callback ทั้งหมดของ prompt -> คืน true ถ้ามีตัวไหนถูกเรียกสำเร็จ
+local function fireTriggerHandlers(prompt)
+    local signal = prompt.Triggered
+    if not signal then return false end
+    local handlers = getTriggerHandlers(signal)
+    if not handlers then return false end
+    local called = false
+    for _, fn in ipairs(handlers) do
+        if pcall(fn) then called = true end
+    end
+    return called
+end
+
+-- ============================================
+-- ขยายระยะ prompt (ทางสำรอง สำหรับ executor ที่ไม่มี getconnections)
+-- ============================================
+-- callback ของเกมไม่เช็คระยะเลย เอาแค่ UUID ไปขอของ
+--   (OreUtils.lua:59-74  LeftInfoGUI.GetOrePack -> FlyToPlayer -> PickupOreBE:Fire()
+--    -> GetOreRF:InvokeServer(uuid))
+-- ตัวเดียวที่ต้องผ่านคือ "prompt ยังถือว่า active อยู่ไหม"
+--   ซึ่งเอนจินวัดจาก MaxActivationDistance (ค่าปริยาย 10)
+--   เกมตั้งแค่ MaxIndicatorDistance = 10 และ HoldDuration = 0.5
+--     (OreDropUtils.lua:98-103)  ไม่ได้แตะ MaxActivationDistance เลย
+--
+-- ดังนั้นแค่ดันค่าพวกนี้ขึ้นไป = prompt ยิงได้จากที่เรายืนอยู่ตรง ๆ
+--   ไม่ต้องย้ายโมดเดลแร่ ไม่ต้องวาร์ป ไม่มีอะไรขยับเลย
+--   (Roblox จะตัดค่าให้เหลือเท่าที่อนุญาตเอง ไม่ error)
+local PROMPT_MAX_RANGE = 9999
+
+local function prepPrompt(prompt)
+    pcall(function()
+        prompt.HoldDuration = 0
+        prompt.RequiresLineOfSight = false
+        prompt.MaxActivationDistance = PROMPT_MAX_RANGE
+        prompt.MaxIndicatorDistance = PROMPT_MAX_RANGE
+    end)
+end
+
+-- สัญญาณว่าเกมรับของแล้ว = จำนวนในกระเป๋าเพิ่มขึ้น
+--   ดูจากตรงนี้ ไม่ใช่จากโมดเดลที่หาย เพราะของยังลอยเข้าตัวอยู่
+--   (OreDropUtils.lua:128-134  TWScale 0.5 วิ -> SwimFly -> ค่อย DestroyOre ทีหลัง)
+--   ถ้ารอจากโมดเดลแล้วเผลอไปทางถัดไป = เรียก callback ซ้ำ = ของเข้ากระเป๋าซ้ำ
+local function waitPickup(before, limit)
+    local waited = 0
+    while waited < limit do
+        local count = getPack()
+        if count and before and count > before then return true end
+        task.wait(0.05)
+        waited = waited + 0.05
+    end
+    return false
+end
+
+-- ============================================
+-- เก็บของ 1 ชิ้น -> คืน true ถ้าของเข้าตัวจริง
+-- ============================================
+-- ทางที่ 1 เรียก callback ตรง = ไม่มีระยะเลยจริง ๆ (ทางหลัก)
+-- ทางที่ 2-3 ขยายระยะ prompt ให้สุด แล้วกดตามปกติ (สำรอง: executor ไม่มี getconnections)
+-- สุดท้ายค่อยดึงของมาวางข้างตัว ถ้าเอนจินบังคับระยะจริง ๆ
+local function pickOre(ore)
+    local prompt = findOrePrompt(ore)
+    if not prompt or not prompt.Enabled then return false end
+
+    -- จำนวนของก่อนยิง ใช้เป็นสัญญาณว่าเข้าตัวสำเร็จ
+    local before = select(1, getPack())
+
+    -- ทางที่ 1: เรียก callback ของเกมตรง ๆ ไม่ผ่าน prompt
+    if fireTriggerHandlers(prompt) then
+        if waitPickup(before, 0.6) then return true end
+        -- ยิงไปแล้ว ห้ามยิงซ้ำเด็ดขาด ไม่งั้นของจะเข้ากระเป๋าสองชิ้น
+        return waitOreGone(ore, 0.2)
+    end
+
+    -- ทางที่ 2: ขยายระยะ prompt ให้สุด แล้วกดตามปกติ
+    prepPrompt(prompt)
+    firePrompt(prompt)
+    if waitPickup(before, 0.5) then return true end
+
+    -- ทางที่ 3: กด prompt เอง (executor บางตัวไม่มี fireproximityprompt)
+    prepPrompt(prompt)
+    local ok = pcall(function()
+        prompt:InputHoldBegin()
+        task.wait(0.05)
+        prompt:InputHoldEnd()
+    end)
+    if not ok then
+        if not fireError then fireError = "InputHoldBegin" end
+    elseif waitPickup(before, 0.6) then
+        return true
+    end
+
+    -- ทางสำรอง: เอนจินคุมระยะเอง -> ดึงของมาวางข้างตัวแล้วลองอีกครั้ง
+    if oreIsNear(ore) then return false end
+    pullOreNear(ore)
+    prepPrompt(prompt)
+    firePrompt(prompt)
+    if waitPickup(before, 0.5) then return true end
+    return waitOreGone(ore, 0.3)
 end
 
 -- ============================================
@@ -458,17 +575,9 @@ local function collectOres()
         return getOrePrice(a.Name) > getOrePrice(b.Name)
     end)
 
-    -- 2) ดึงแร่ที่อยู่ไกลทั้งหมดมาวางใกล้ในรอบเดียว (ลด task.wait ต่อชิ้น)
-    for _, ore in ipairs(ores) do
-        local count, max = getPack()
-        if count and max and count >= max then break end
-        if not oreIsNear(ore) then
-            pullOreNear(ore)
-        end
-    end
-    task.wait(0.05)
-
-    -- 3) เก็บทีละชิ้นจากแพงสุด
+    -- 2) เก็บทีละชิ้นจากแพงสุด
+    --    ไม่ต้องดึงของมาก่อนแล้ว (เดิมเป็นขั้นตอนแยก) เพราะ pickOre ขยายระยะ prompt ให้เอง
+    --    และย้ายของต่อก็เหลือแค่ทางสำรอง ตอนนี้เกิดแค่กรณีที่เอนจินคุมระยะตัวเอง
     local picked = 0
     for _, ore in ipairs(ores) do
         local count, max = getPack()
@@ -834,8 +943,8 @@ local function runRound()
         return
     end
 
-    -- 7) เก็บของ: ดึงมอนที่ตกมาวางข้างตัว แล้วกด prompt เอง เรียงจากราคาแพงสุดก่อน
-    --    ไม่ต้องวาร์ปไปหาของ เพราะโมดเดลใน OreCache ย้ายไปวางที่ไหนก็ได้
+    -- 7) เก็บของ: ขยายระยะ prompt แล้วกดจากที่ยืน เรียงจากราคาแพงสุดก่อน
+    --    ไม่ต้องวาร์ปไปหาของ และไม่ต้องย้ายโมดเดลใน OreCache ด้วย
     local picked = collectOres()
     task.wait(0.3)
 
