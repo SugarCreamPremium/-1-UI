@@ -1,4 +1,4 @@
--- Version 10.50
+-- Version 10.59
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -596,7 +596,7 @@ local currentArea = nil
 -- แต่ไม่ต้องถี่เกินนี้ เพราะตอนตั้งค่าใหม่ เกมเริ่มนับการเทรนใหม่จากศูนย์
 local TRAIN_EVERY = 0.2
 local lastTrainChange = 0
-local TRAIN_CHANGE_COOLDOWN = 0.4
+local TRAIN_CHANGE_COOLDOWN = 0.1
 
 local function trainLoop()
     while trainEnabled do
@@ -841,7 +841,10 @@ local function setTrain(value)
     if trainEnabled then
         if not trainRunning then
             trainRunning = true
+            lastTrainChange = 0
             task.spawn(trainLoop)
+        else
+            lastTrainChange = 0
         end
     else
         trainRunning = false
