@@ -1,4 +1,4 @@
--- Version 8.25
+-- Version 9.07
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -833,3 +833,42 @@ local function setRebirth(value)
     end
 end
 
+-- ============================================
+-- register: ผูกกับแถบของ WindUI
+-- ============================================
+function AutoFarm.register(context)
+    local tab = context.Tab
+    windUI = context.WindUI
+    if not tab then return end
+
+    local names = getStageNames()
+    if #names > 0 then
+        STAGE_NAMES = names
+        if selectedStage == nil or not table.concat(STAGE_NAMES, ","):find(selectedStage, 1, true) then
+            selectedStage = STAGE_NAMES[1]
+        end
+    end
+
+    local display = {}
+    for i, name in ipairs(STAGE_NAMES) do
+        display[i] = (name:gsub("_", " "))
+    end
+
+    local trainSection = tab:Section({Title = "Train", Opened = true})
+    if trainSection then
+        trainSection:Toggle({Title = "เริ่ม Auto Train", Desc = "ฟาร์ม x100 โดยไม่ต้องไปยืนตรงจุด Train", Value = false, Callback = setTrain})
+        trainSection:Toggle({Title = "Auto Rebirth", Desc = "รีเบิร์ธอัตโนมัติเมื่อถึงเกณฑ์", Value = false, Callback = setRebirth})
+    end
+
+    local farmSection = tab:Section({Title = "Farm", Opened = true})
+    if farmSection then
+        farmSection:Select({Title = "เลือก Stage", Desc = "เลือกด่านที่ต้องการฟาร์ม", Options = display, Callback = function(val)
+            local idx = 0
+            for i, d in ipairs(display) do if d == val then idx = i; break end end
+            if idx ~= 0 then selectedStage = STAGE_NAMES[idx] end
+        end})
+        farmSection:Toggle({Title = "เริ่ม Auto Farm", Desc = "ฟาร์มรอบอัตโนมัติ (ไม่วาร์ปไปหาของ)", Value = false, Callback = setRunning})
+    end
+end
+
+return AutoFarm
