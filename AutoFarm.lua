@@ -1,5 +1,4 @@
--- Version 10.59
-print("Test")
+-- Version 11.08
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -596,8 +595,6 @@ local currentArea = nil
 -- ตรวจถี่แค่ไหน = ตอนเกมล้าง attribute เราจะได้ตั้งคืนได้เร็ว ชะงักน้อยลง
 -- แต่ไม่ต้องถี่เกินนี้ เพราะตอนตั้งค่าใหม่ เกมเริ่มนับการเทรนใหม่จากศูนย์
 local TRAIN_EVERY = 0.2
-local lastTrainChange = 0
-local TRAIN_CHANGE_COOLDOWN = 0.1
 
 local function trainLoop()
     while trainEnabled do
@@ -611,12 +608,8 @@ local function trainLoop()
                 if cur ~= best then
                     -- ตั้ง AutoTrainAreaID เฉย ๆ ไม่ต้องวาร์ป
                     --   เกมยังคำนวณตัวคูณตามจุดนั้น แม้ยืนอยู่นอกจุดก็ตาม
-                    local t = os.clock()
-                    if (t - lastTrainChange) >= TRAIN_CHANGE_COOLDOWN then
-                        enterTrainArea(best)
-                        currentArea = best
-                        lastTrainChange = t
-                    end
+                    enterTrainArea(best)
+                    currentArea = best
                 end
             end
             task.wait(TRAIN_EVERY)
@@ -842,10 +835,7 @@ local function setTrain(value)
     if trainEnabled then
         if not trainRunning then
             trainRunning = true
-            lastTrainChange = 0
             task.spawn(trainLoop)
-        else
-            lastTrainChange = 0
         end
     else
         trainRunning = false
