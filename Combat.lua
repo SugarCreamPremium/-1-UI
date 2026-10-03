@@ -1,4 +1,4 @@
--- Version 10.45
+-- Version 12.15
 -- หมวดต่อสู้
 local Combat = {}
 
@@ -214,20 +214,20 @@ function Combat.register(context)
     if auraSection then
         auraSection:Toggle({
             Title = "เปิด Kill Aura",
-            Desc = "ตีมอนอัตโนมัติทุกตัวที่อยู่ในระยะ ไม่ต้องเดินเข้าไปหรือหันตัวเอง",
+            Desc = "ฆ่ามอนอัตโนมัติทุกตัวที่อยู่ในระยะ ไม่ต้องเดินเข้าไปหรือหันตัวเอง",
             Value = false,
             Callback = setAura,
         })
         auraSection:Slider({
             Title = "ระยะ",
-            Desc = "หน่วย stud วัดจากตัวละคร (ยิ่งไกลยิงพลาดมากขึ้น)",
-            Value = {Min = 5, Max = 80, Default = 25},
+            Desc = "หน่วย stud วัดจากตัวละคร",
+            Value = {Min = 5, Max = 500, Default = 25},
             Step = 1,
             Callback = function(value) auraRange = math.clamp(value, 5, 80) end,
         })
         auraSection:Button({
             Title = "ยิงครั้งเดียว",
-            Desc = "ยิงมอนในระยะ 1 รอบ แล้วหยุด (ไม่ต้องเปิดสวิตช์ค้างไว้)",
+            Desc = "ฆ่ามอนในระยะ 1 รอบ",
             Callback = function()
                 local hit = auraSweep()
                 notify("ยิงแล้ว", hit .. " ตัว ในระยะ " .. auraRange)
