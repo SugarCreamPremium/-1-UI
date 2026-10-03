@@ -1,4 +1,4 @@
--- Version 12.38
+-- Version 5.11
 -- แถบขายของ (มี 2 ตัวเลือก ใช้คนละเรื่องกัน)
 --
 --   1) "ขายแร่จนกว่าจะอัปเกรดครบ"  ขายเฉพาะแร่ และหยุดเองเมื่ออัปครบทั้ง 3 สถิติ
@@ -82,7 +82,21 @@ local PRICE = {
     ["Ore_43"] = 36732, ["Ore_44"] = 42000, ["Ore_45"] = 47000, ["Ore_46"] = 53200, ["Ore_47"] = 60000, ["Ore_48"] = 80000,
 }
 
--- ช่องที่ใส่ของได้ ใช้ตอนเทียบกับของที่ใส่อยู่
+-- ชิ้นในกระเป๋าเก็บ Type เป็นชนิดย่อย ไม่ใช่ชื่อโฟลเดอร์ Config
+--   อาวุธ -> "Katana" (ดาบ) / "Great" (ธนู)      เกราะ -> "Light" / "Heave"
+--   หมวก  -> "Hat"   (หมวกไปอยู่ใน Config "Armor" ตาม GetConfigType)
+--   (BackpackGUI.lua:71-82 GetConfigType, Weapon/Helper.lua:26-34 ตั้ง j.Type เป็น Katana/Great/Light)
+--   (BackpackData.lua:140 GetConfigType -> "Hat" กับ "Armor" แยกเป็นคนละช่อง แต่ใช้ Config เดียวกัน)
+-- ตารางนี้แปลง entry.Type -> ช่องที่ใส่ เพื่อไม่ขายของที่ผู้ใช้ใส่อยู่
+local SLOT_OF_TYPE = {
+    Katana = "Weapon",
+    Great  = "Weapon",
+    Light  = "Armor",
+    Heave  = "Armor",
+    Hat    = "Hat",
+}
+
+-- ช่องที่ใส่ได้ทั้ง 3 ช่อง (ใช้เช็คว่าต้องระวังของใส่อยู่หรือไม่)
 local EQUIP_SLOTS = {Weapon = true, Armor = true, Hat = true}
 
 -- ============================================
@@ -252,8 +266,14 @@ local function sellableKeys()
             local price = priceOf(entry)
 
             if price and price > 0 then
-                if not EQUIP_SLOTS[entry.Type] then
-                    -- แร่ -> ขายหมด
+                local slotName = SLOT_OF_TYPE[entry.Type]
+                local isEquipSlot = slotName and EQUIP_SLOTS[slotName] or false
+
+                if entry.Type == "Ore" then
+                    -- แร่ -> ขายให้หมด ไม่ต้องเก็บไว้
+                    keys[#keys + 1] = key
+                elseif not isEquipSlot then
+                    -- ของอื่นที่ไม่มีช่องใส่ (ถ้ามี) ให้ขายตามปกติ
                     keys[#keys + 1] = key
                 elseif not worn[key] then
                     -- ของที่ยังไม่ได้ใส่ และยังไม่เคยเก็บ ID นี้ไว้
@@ -262,7 +282,7 @@ local function sellableKeys()
                     else
                         kept[entry.ID] = true
                         -- แพงกว่าของที่ใส่อยู่ = เก็บไว้ ไม่ขาย
-                        local theirs = priceOf(equipedItem(entry.Type))
+                        local theirs = priceOf(equipedItem(slotName))
                         if not (theirs and price > theirs) then
                             keys[#keys + 1] = key
                         end
