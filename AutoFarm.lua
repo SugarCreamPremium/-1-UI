@@ -1,4 +1,4 @@
--- Version 11.08
+-- Version 11.26
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -835,6 +835,7 @@ local function setTrain(value)
     if trainEnabled then
         if not trainRunning then
             trainRunning = true
+            pcall(function() notify("Auto Train เริ่มทำงาน", "จะใช้จุดเทรนที่ดีที่สุด") end)
             task.spawn(trainLoop)
         end
     else
