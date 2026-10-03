@@ -1,4 +1,4 @@
--- Version 6.35
+-- Version 6.48
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
@@ -498,26 +498,10 @@ local function bestTrainArea(rebirth)
     return bestIndex
 end
 
--- วาร์ปไปยืนกลางจุดเทรนนั้น
--- จังหวะชะงักที่เหลือไม่ได้มาจากการยืน แต่มาจากเกมล้าง AutoTrainAreaID เป็นระยะ
---   แล้วเราตั้งคืนทุก 1 วิ (TRAIN_EVERY) ตอนตั้งค่าใหม่ เกมจะเริ่มเทรนใหม่จากศูนย์
---   ยิ่งตรวจถี่ยิ่งชะงักน้อย แต่ไม่ต้องถี่เกินไป เพราะแต่ละครั้งคือการเริ่มเทรนใหม่
+-- ไม่ต้องวาร์ปแล้ว (เดินออกมา Train ได้อยู่)
+-- ฟังก์ชันนี้ทิ้งไว้เฉย ๆ ไม่ถูกเรียกใช้งาน
 local function warpToTrain(areaId)
-    local char = player.Character
-    if not char or not getHRP() then return false end
-
-    local touched = workspace:FindFirstChild("TOUCHED")
-    local areas = touched and touched:FindFirstChild("AutoTrainArea")
-    local spot = areas and areas:FindFirstChild(tostring(areaId))
-    if not spot then return false end
-
-    return pcall(function()
-        if spot:IsA("Model") then
-            char:PivotTo(spot:GetPivot())
-        elseif spot:IsA("BasePart") then
-            char:PivotTo(spot.CFrame * CFrame.new(0, 3, 0))
-        end
-    end)
+    return true
 end
 
 -- อ่านค่าจุดที่ยืนอยู่เป็นตัวเลขเสมอ
@@ -534,11 +518,8 @@ end
 --   BalanceUtils.lua:163 ใช้ attribute เดียวกันนี้คิดตัวคูณดาเมจตอนเทรน
 --   (AutoTrainAreaGUI.lua:50  Rebirth_4:WaitForChild("Allow"))
 --
--- needWarp = false ใช้ตอน "กลับเข้าจุดเดิม" เพราะเกมล้าง attribute เอง
---   ถ้าวาร์ปทุกครั้งที่ attribute หาย ตัวละครจะถูกดึงออกจาก DUMMY ทุกวินาที
---   ทำให้เทรนได้ไม่กี่ทีแล้วต้องเริ่มใหม่ แค่ตั้ง attribute ซ้ำก็พอแล้ว
-local function enterTrainArea(areaId, needWarp)
-    if needWarp and not warpToTrain(areaId) then return false end
+-- ไม่ต้องวาร์ปแล้ว เพราะเกมคำนวณตัวคูณจาก AutoTrainAreaID แม้ยืนอยู่นอกจุดก็ตาม
+local function enterTrainArea(areaId)
     if currentTrainArea() ~= areaId then
         -- ต้องตั้งเป็น string ไม่ใช่ตัวเลข
         --   เกมเก็บค่านี้เป็นชื่อ Part (string) มาตั้งแต่แรก ดูจาก BalanceUtils.lua:99
@@ -562,13 +543,14 @@ local function trainLoop()
             task.wait(1)
         else
             local best = bestTrainArea(getRebirth())
-            if best and best ~= currentArea then
-                -- เปลี่ยนจุด = วาร์ปไปจุดใหม่ (วาร์ปแค่ครั้งเดียวต่อจุด)
-                currentArea = best
-                enterTrainArea(best, true)
-            elseif best and currentTrainArea() ~= best then
-                -- กลับเข้าจุดเดิมที่เกมล้าง attribute ทิ้ง = ตั้งคืนค่า ไม่วาร์ปซ้ำ
-                enterTrainArea(best, false)
+            if best then
+                local cur = currentTrainArea()
+                if cur ~= best then
+                    -- ตั้ง AutoTrainAreaID เฉย ๆ ไม่ต้องวาร์ป
+                    --   เกมยังคำนวณตัวคูณตามจุดนั้น แม้ยืนอยู่นอกจุดก็ตาม
+                    enterTrainArea(best)
+                    currentArea = best
+                end
             end
             task.wait(TRAIN_EVERY)
         end
@@ -793,18 +775,16 @@ function AutoFarm.register(context)
     if trainSection then
         trainSection:Toggle({
             Title = "เริ่ม Auto Train",
-            Desc = "วาร์ปไปยืนจุดเทรนที่ดีที่สุดที่จำนวน Rebirth จะไปถึง "
-                .. "พอ Rebirth แล้วก็ย้ายไปจุดที่ดีกว่าให้เอง",
+            Desc = "ฟาร์ม x100 โดยไม่ต้องไปยืนตรงจุด Train",
             Value = false,
             Callback = function(value)
                 if value then
                     -- ฟาร์มสเตจกับยืนเทรนสั่งให้ตัวละครไปคนละที่ ถ้าเปิดพร้อมกันจะดึงกันไปมา
                     running = false
-                    notify("Auto Train เริ่มทำงาน", "กำลังไปหาจุดเทรนที่ดีที่สุดให้")
+                    notify("Auto Train เริ่มทำงาน", "จะใช้จุดเทรนที่ดีที่สุด")
                 else
-                    -- ปิดแล้วต้องเอาตัวละครออกจากจุดเทรนด้วย ไม่งั้นเกมจะล็อกตัวละครไว้บน DUMMY ตลอดไป
-                    --   (TrainCTRL.lua:61-62  attribute เป็น nil -> ExitAutoTrain)
-                    if currentArea and currentTrainArea() == currentArea then
+                    -- ปิด Auto Train -> ลบ attribute ออก ไม่งั้นเกมอาจยังถือว่ากำลังเทรนอยู่
+                    if player:GetAttribute("AutoTrainAreaID") ~= nil then
                         player:SetAttribute("AutoTrainAreaID", nil)
                     end
                     currentArea = nil
