@@ -1,4 +1,4 @@
--- Version 12.52
+-- Version 4.10
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
@@ -484,7 +484,9 @@ local function bestTrainArea(rebirth)
     if not rebirth then return nil end
     for index = #TRAIN_AREA, 1, -1 do
         local area = TRAIN_AREA[index]
-        if not area.IsPay and area.NeedRebirth <= rebirth then
+        if area.NeedRebirth <= rebirth then
+            -- ข้ามจุดที่ต้องซื้อด้วย Robux (9,10,11) เพราะเช็คไม่ได้ว่าซื้อแล้วหรือยัง
+            -- แต่ทดลอง: ถ้าเซิร์ฟไม่เช็ค เราก็ข้ามไปได้เลย
             return index
         end
     end
