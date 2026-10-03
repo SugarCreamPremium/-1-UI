@@ -1,4 +1,4 @@
--- Version 7.40
+-- Version 7.41
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -285,19 +285,19 @@ local function firePrompt(prompt)
     return ok
 end
 
--- ยิงแล้วรอจนกว่าเกมจะรับ -> คืน true ถ้าได้ของ
--- สัญญาณว่าเกมรับของแล้ว: prompt ถูกปิด (เกมสั่งใน FlyToPlayer) หรือโมเดลถูกทำลาด
---   (OreDropUtils.lua:157-159) ถ้ากระเป๋าเต็ม prompt จะยัง Enabled เพราะ callback ของเกม return ออกก่อน
---   -> กระเป๋าเต็มต้องเช็คจาก getPack() ข้างบน ไม่ใช่รอสัญญาณตรงนี้
-local function fireAndWait(prompt, ore)
-    firePrompt(prompt)
-    -- callback ของเกมยังต้องทำงานจนเสร็จ จึงต้องรอสัญญาณ ไม่ใช่ยิงทิ้งเลย
+-- รอสัญญาณว่าเกมรับของแล้ว -> คืน true ถ้าของหายไปจาก cache แล้ว
+--   เกมสั่ง FlyToPlayer แล้ว DestroyOre ทิ้งโมดเดลท้ายสุด (OreDropUtils.lua:130-132)
+--   ถ้ากระเป๋าเต็ม callback ของเกมจะ return ออกก่อน ไม่ได้ไปแตะ FlyToPlayer
+--     (OreUtils.lua:62-66) ของก็ยังอยู่ prompt ก็ยัง Enabled
+--   -> กระเป๋าเต็มต้องเช็คจาก getPack() ข้างล่าง ไม่ใช่รอสัญญาณตรงนี้
+local function waitOreGone(ore, limit)
     local waited = 0
-    while waited < 1.5 do
-        if not prompt.Enabled or not ore.Parent then return end
+    while waited < limit do
+        if not ore.Parent then return true end
         task.wait(0.1)
         waited = waited + 0.1
     end
+    return not ore.Parent
 end
 
 -- หา ProximityPrompt ของแร่ 1 ชิ้น
@@ -321,6 +321,78 @@ local function findOrePrompt(ore)
         if desc:IsA("ProximityPrompt") then return desc end
     end
     return nil
+end
+
+-- ระยะที่ถือว่าอยู่ใกล้พอ ไม่ต้องดึงของมาวางใหม่
+--   OreDropUtils.lua:110-111 ตั้ง MaxIndicatorDistance = 10
+--     และไม่ได้แตะ MaxActivationDistance ซึ่งค่าเริ่มต้นของ ProximityPrompt คือ 10
+--   เผื่อไว้หน่อยเพราะ prompt วัดจากขอบโมดเดล ไม่ใช่จุดกึ่งกลาง
+local ORE_NEAR_RANGE = 12
+
+-- ============================================
+-- ดึงของมาวางข้างตัวละคร เพื่อให้กด prompt ได้โดยไม่ต้องวาร์ปไปหา
+-- ============================================
+-- ของตกที่จุดที่มอนตาย ซึ่งอยู่ที่ EnemyPoint ของสเตจ ไม่ใช่ที่เรายืน
+--   (StageUtils.HurtEnemy:308 เก็บ DeadCF จากจุดตายของมอน)
+-- แต่ตัวที่อยู่ใน OreCache เป็นแค่ clone ฝั่ง client ที่เกมสร้างเอง
+--   (OreDropUtils.lua:52-56  Model:Clone() -> PivotTo -> Parent = OreCache)
+-- เกมไม่เคยเช็คตำแหน่งของตอนให้ของ มันเอาแค่ UUID ไปขอ
+--   (OreUtils.lua:59-74  callback -> PickupOreBE:Fire() -> GetOreRF:InvokeServer(uuid))
+-- ย้ายโมดเดลมาวางใกล้ตัวละคร ก็เท่ากับ "ไปเก็บของด้วยตัวเอง" โดยไม่ต้องขยับตัวละครเลย
+local function pullOreNear(ore)
+    local hrp = getHRP()
+    if not hrp then return false end
+    return pcall(function()
+        -- ต้อง anchor ก่อน ไม่งั้นแรงโน้มถ่วงจะดึงมันตกกลับไปที่เดิม
+        --   CreateOneDrop:63-65 ใส่ AssemblyLinearVelocity ไว้ = ตอนนั้นยังไม่ anchor
+        for _, desc in ipairs(ore:GetDescendants()) do
+            if desc:IsA("BasePart") then
+                desc.Anchored = true
+            end
+        end
+        local target = hrp.CFrame * CFrame.new(0, 0, -3)
+        ore:PivotTo(target)
+        local primary = ore.PrimaryPart
+        if primary then
+            primary.CFrame = target
+        end
+    end)
+end
+
+local function oreIsNear(ore)
+    local hrp = getHRP()
+    if not hrp then return false end
+    local pos = ore.PrimaryPart and ore.PrimaryPart.Position or ore:GetPivot().Position
+    return (pos - hrp.Position).Magnitude <= ORE_NEAR_RANGE
+end
+
+-- ============================================
+-- เก็บของ 1 ชิ้น -> คืน true ถ้าของเข้าตัวจริง
+-- ============================================
+-- ลอง fireproximityprompt ก่อน แต่ตัวนี้ข้ามระยะได้หรือไม่ขึ้นอยู่กับ executor
+--   ถ้ามันมีอยู่แต่ทำงานเงียบ ๆ ไม่มี error -> ทางแรกใน firePrompt จะไม่ throw
+--     และทางสำรอง (กด prompt เอง) ก็ไม่ถูกเรียก ของก็เลยไม่เข้าตัวโดยไม่มีอะไรฟ้อง
+--   -> ยิงเสร็จต้องเช็คว่าของหายไปจริงไหม ถ้ายังอยู่ค่อยลองวิธีที่สองเอง
+local function pickOre(ore)
+    local prompt = findOrePrompt(ore)
+    if not prompt or not prompt.Enabled then return false end
+
+    firePrompt(prompt)
+    if waitOreGone(ore, 0.5) then return true end
+
+    -- วิธีที่สอง: กด prompt เอง ต้องอยู่ใกล้พอถึงจะผ่าน (เราดึงมาใกล้แล้ว)
+    local ok = pcall(function()
+        prompt.HoldDuration = 0
+        prompt:InputHoldBegin()
+        task.wait(0.05)
+        prompt:InputHoldEnd()
+    end)
+    if not ok then
+        if not fireError then fireError = "InputHoldBegin" end
+        return false
+    end
+
+    return waitOreGone(ore, 0.8)
 end
 
 -- อ่านจำนวนของในกระเป๋า / ขนาดกระเป๋า -> count, max
@@ -365,16 +437,13 @@ end
 --   แปลว่า prompt ยัง Enabled อยู่ = ยิงซ้ำก็ไม่มีอะไรเกิดขึ้น
 --   -> ต้องเช็คจำนวนในกระเป๋าก่อนยิงทุกชิ้น ไม่งั้นจะยิงเปล่า 1.5 วิ ทีละชิ้นจนครบ
 --
--- ระยะที่ ProximityPrompt ของเกมยอมให้ยิง
---   OreDropUtils.lua:110-111 ตั้ง MaxIndicatorDistance = 10 และไม่ได้แตะ MaxActivationDistance
---     ซึ่งค่าเริ่มต้นของ ProximityPrompt คือ 10 เท่ากัน
---   ของตกที่จุดที่มอนตาย (StageUtils.HurtEnemy:308 เก็บ DeadCF จากจุดตายของมอน)
---     ซึ่งอยู่ที่ EnemyPoint ของสเตจ ไม่ใช่ตรงที่เรายืน
---   -> ถ้าไม่วาร์ปไปหา ของที่ตกจะอยู่ไกลเกินกดไม่ถึง ต้องปล่อยให้เกมจัดการตอนออกแทน
-local ORE_PICK_RANGE = 12
+-- ข้อความเตือนว่าเก็บของไม่ได้ ส่งออกไปโชว์ทีเดียว ไม่งั้นจะขึ้นทุกรอบ
+local collectWarned = false
+local collectWarnMsg = nil
+
 local function collectOres()
     local cache = getOreCache()
-    if not cache then return end
+    if not cache then return 0 end
 
     -- 1) รวบรวมแร่ที่ตกอยู่ แล้วเรียงจากราคาแพงสุดไปถูกสุด
     --    ของที่ไม่ใช่แร่ (เช่นก้อนเสริม) ชื่อไม่ตรง Ore_ตัวเลข -> ข้ามไป
@@ -385,43 +454,42 @@ local function collectOres()
             ores[#ores + 1] = model
         end
     end
-    if #ores == 0 then return end
+    if #ores == 0 then return 0 end
 
     table.sort(ores, function(a, b)
         return getOrePrice(a.Name) > getOrePrice(b.Name)
     end)
 
-    -- 2) เก็บทีละชิ้นจากแพงสุด หยุดทันทีที่กระเป๋าเต็ม
-    --    ถ้ากระเป๋าพอทั้งหมดจะเก็บครบทุกชิ้นเท่ากัน
-    --    ข้ามชิ้นที่อยู่ไกลเกินกดไม่ถึง ไม่งั้นจะเสียเวลารอ 1.5 วิ ทีละชิ้นเปล่า ๆ
-    --    ของที่ข้ามจะถูกเกมเก็บให้เองตอน ExitFight (ClaimedAllOreRE)
-    local hrp = getHRP()
+    -- 2) เก็บทีละชิ้นจากแพงสุด จนกว่ากระเป๋าจะเต็ม
+    --    ของที่อยู่ไกลจะถูกดึงมาวางข้างตัวก่อน จึงไม่ต้องวาร์ปไปหาเลย
+    --    ชิ้นแรกที่เก็บไม่ได้ = วิธีนี้ใช้ไม่ได้จริง หยุดเลย ไม่เสียเวลายิงที่เหลือ
+    local picked = 0
     for _, ore in ipairs(ores) do
         -- กระเป๋าเต็มแล้ว -> เก็บต่อไม่ได้อยู่ดี ให้ข้ามไป เกมจะจัดการที่เหลือตอน ExitFight
         local count, max = getPack()
         if count and max and count >= max then break end
 
-        -- ข้ามชิ้นที่อยู่ไกลเกินกดไม่ถึง
-        --   ใช้ if เหมือนเดิม ไม่ใช้ continue เพราะเป็นคีย์เวิร์ดเฉพาะ Luau
-        --   (ไฟล์นี้เลี่ยงไว้ทั้งไฟล์ เพราะต้องให้ของเปิดใน executor รุ่นเก่าได้ด้วย)
-        local tooFar = false
-        if hrp then
-            local pos = ore.PrimaryPart and ore.PrimaryPart.Position or ore:GetPivot().Position
-            tooFar = (pos - hrp.Position).Magnitude > ORE_PICK_RANGE
+        if not oreIsNear(ore) then
+            pullOreNear(ore)
+            task.wait(0.05)
         end
 
-        if not tooFar then
-            local prompt = findOrePrompt(ore)
-            if prompt and prompt.Enabled then
-                fireAndWait(prompt, ore)
-                if fireError then
-                    -- ยิงไม่ขึ้น = วิธีที่มีใช้ไม่ได้ ไม่ต้องรอ 1.5 วิ ให้ครบทุกชิ้นแล้ว
-                    -- ปล่อยให้รอบนี้จบเร็วแล้วไปรอบต่อไป
-                    break
-                end
-            end
+        if pickOre(ore) then
+            picked = picked + 1
+        else
+            break
         end
     end
+
+    -- 3) แจ้งสาเหตุที่เก็บไม่ได้ ครั้งเดียวพอ ไม่งั้นจะขึ้นทุกรอบ
+    if picked == 0 and #ores > 0 and not collectWarned then
+        collectWarned = true
+        collectWarnMsg = fireError
+            and ("เก็บของไม่ได้: " .. tostring(fireError))
+            or "เก็บของไม่ได้ ทั้งที่ของตกแล้ว (ลองสลับ executor ดู)"
+    end
+
+    return picked
 end
 
 -- ============================================
@@ -626,6 +694,21 @@ end
 --   4) ของ: HurtEnemy:308 เก็บ DeadCF = ตำแหน่งที่มอนตาย (จุดเกิดมอน)
 --           ของจึงตกที่นั่น ไม่ใช่ที่เรายืน
 -- ผลคือไม่ต้องเดินไปไหนเลย ทั้งรอบอยู่ที่เดิม ไม่มีจังหวะกระตุกจากการวาร์ป
+-- ============================================
+-- แจ้งเตือนผู้ใช้
+-- ============================================
+-- ต้องอยู่ระดับ module ไม่ใช่ใน register เพราะ runRound จะเรียกใช้ด้วย
+--   local function ใน register มองจากข้างนอกไม่เห็น (upvalue ไม่หลุดออกมา)
+local windUI = nil
+
+local function notify(title, desc)
+    if not windUI then return end
+    pcall(function()
+        windUI:Notify({Title = title, Content = desc, Duration = 3})
+    end)
+end
+
+
 local function runRound()
     -- 1) รอจนฟื้นฟู (ถ้าตายอยู่ ไม่ต้องทำอะไรรอบนี้)
     if player:GetAttribute("Dead") then
@@ -687,14 +770,20 @@ local function runRound()
         return
     end
 
-    -- 7) เก็บของ: แพงสุดก่อน จนกว่ากระเป๋าจะเต็ม (หรือเก็บครบถ้าพอ)
-    --    ของที่อยู่ไกลเกิน ORE_PICK_RANGE จะถูกข้าม รอข้อ 8 ให้เกมจัดการแทน
-    collectOres()
-    task.wait(0.5)
+    -- 7) เก็บของ: ดึงมอนที่ตกมาวางข้างตัว แล้วกด prompt เอง เรียงจากราคาแพงสุดก่อน
+    --    ไม่ต้องวาร์ปไปหาของ เพราะโมดเดลใน OreCache ย้ายไปวางที่ไหนก็ได้
+    local picked = collectOres()
+    task.wait(0.3)
+
+    if picked == 0 and collectWarnMsg then
+        notify("เก็บของไม่ได้", collectWarnMsg)
+        collectWarned = false
+        collectWarnMsg = nil
+    end
 
     -- 8) ออกจากสเตจ -> ExitFight ยิง ClaimedAllOreRE ให้เซิร์ฟเวอร์
     --    แล้วล้างของที่เหลือทิ้ง (StageUtils.lua:189-197)
-    --    ของที่เราเก็บเองไม่ทันจะถูก ClaimedAllOreRE เก็บให้ทั้งหมด
+    --    ของที่เก็บเองไม่ทันจะถูก ClaimedAllOreRE เก็บให้ทั้งหมด
     --    skipWarp = true เพราะเราไม่วาร์ปไปไหน ไม่ต้องโดนลากกลับจุดเกิด
     if player:GetAttribute("IntoFight") then
         exitFight(true, true)
@@ -739,108 +828,3 @@ local function setRebirth(value)
     end
 end
 
--- ============================================
--- register: ผูกกับแถบของ WindUI
--- ============================================
-function AutoFarm.register(context)
-    local tab = context.Tab
-    local WindUI = context.WindUI
-    if not tab then return end
-
-    local function notify(title, desc)
-        if not WindUI then return end
-        pcall(function()
-            WindUI:Notify({Title = title, Content = desc, Duration = 3})
-        end)
-    end
-
-    -- อ่านซ้ำตอนเปิดหน้าต่าง เพราะตอนโหลดโมดูลแมพอาจยังไม่เข้า workspace เต็ม
-    -- ถ้าได้รายชื่อจริงมา ให้ใช้ของจริงแทนรายการสำรอง
-    local names = getStageNames()
-    if #names > 0 then
-        STAGE_NAMES = names
-        if selectedStage == nil or not table.concat(STAGE_NAMES, ","):find(selectedStage, 1, true) then
-            selectedStage = STAGE_NAMES[1]
-        end
-    end
-
-    -- ชื่อที่แสดง "Stage 1" แต่ค่าจริงต้องเป็น "Stage_1" ที่เกมรู้จัก
-    local display = {}
-    for i, name in ipairs(STAGE_NAMES) do
-        display[i] = (name:gsub("_", " "))
-    end
-
-    -- ส่วน Train ต้องอยู่เหนือ Dungeon เพราะ WindUI เรียงตามลำดับที่สร้าง
-    local trainSection = tab:Section({Title = "Train", Opened = true})
-    if trainSection then
-        trainSection:Toggle({
-            Title = "เริ่ม Auto Train",
-            Desc = "ฟาร์ม x100 โดยไม่ต้องไปยืนตรงจุด Train",
-            Value = false,
-            Callback = function(value)
-                if value then
-                    -- ฟาร์มสเตจกับยืนเทรนสั่งให้ตัวละครไปคนละที่ ถ้าเปิดพร้อมกันจะดึงกันไปมา
-                    running = false
-                    notify("Auto Train เริ่มทำงาน", "จะใช้จุดเทรนที่ดีที่สุด")
-                else
-                    -- ปิด Auto Train -> ลบ attribute ออก ไม่งั้นเกมอาจยังถือว่ากำลังเทรนอยู่
-                    if player:GetAttribute("AutoTrainAreaID") ~= nil then
-                        player:SetAttribute("AutoTrainAreaID", nil)
-                    end
-                    currentArea = nil
-                end
-                setTrain(value)
-            end,
-        })
-        trainSection:Toggle({
-            Title = "Auto Rebirth",
-            Desc = "ถ้าเลเวลถึงเกณฑ์ของ Rebirth ถัดไปแล้ว Rebirth ให้ทันที",
-            Value = false,
-            Callback = function(value)
-                if value then
-                    notify("Auto Rebirth เปิดอยู่", "จะ Rebirth ให้ทันทีที่เลเวลถึงเกณฑ์")
-                end
-                setRebirth(value)
-            end,
-        })
-    end
-
-    local section = tab:Section({Title = "Dungeon", Opened = true})
-    if not section then
-        tab:Paragraph({Title = "Dungeon", Desc = "ไม่สามารถสร้างส่วนควบคุมได้"})
-        return
-    end
-
-    section:Dropdown({
-        Title = "เลือกสเตจ",
-        Desc = "มีทั้งหมด " .. #STAGE_NAMES .. " สเตจ",
-        Values = display,
-        Value = display[1],
-        Callback = function(value)
-            for i, name in ipairs(STAGE_NAMES) do
-                if display[i] == value then
-                    selectedStage = name
-                    break
-                end
-            end
-        end,
-    })
-
-    section:Toggle({
-        Title = "เริ่ม Auto Farm",
-        Desc = "สั่งให้มอนเกิด ฆ่า รอของตก แล้วเก็บ โดยไม่ต้องวาร์ปไปที่สเตจ "
-            .. "ตัวละครอยู่ที่เดิมตลอด ไม่ต้องเดินไปไหน",
-        Value = false,
-        Callback = function(value)
-            if value then
-                -- เหมือนกันกับ Auto Train ข้างบน ปิดยืนเทรนให้อัตโนมัติ
-                trainEnabled = false
-                currentArea = nil
-                notify("Auto Farm เริ่มทำงาน", "กำลังฟาร์ม " .. (selectedStage or ""):gsub("_", " "))
-            end
-            setRunning(value)
-        end,
-    })
-end
-
-return AutoFarm
