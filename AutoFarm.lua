@@ -1,4 +1,5 @@
--- Version 6.04
+-- Version 6.21
+print("Test")
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
@@ -498,7 +499,20 @@ local function bestTrainArea(rebirth)
     return bestIndex
 end
 
--- วาร์ปไปยืนกลางจุดเทรนนั้น
+-- หา DUMMY ของจุดเทรนนั้น
+--   TrainCTRL.lua:143-152 ล็อกตัวละครไว้บน DUMMY เฉพาะจุดที่ "มี" DUMMY
+--   จุดที่ไม่มี เกมจะไม่ล็อกให้ ตัวละครก็ไหลออกจากจุด แล้วเซิร์ฟเวอร์ล้าง attribute
+local function findDUMMY(areaId)
+    local folder = workspace:FindFirstChild("CanAttackFolder")
+    local trainArea = folder and folder:FindFirstChild("TrainArea")
+    local spot = trainArea and trainArea:FindFirstChild("Train_" .. tostring(areaId))
+    return spot and spot:FindFirstChild("DUMMY", true) or nil
+end
+
+-- ตำแหน่งที่จะจับตัวละครไว้ (ใช้ตอนจุดนั้นไม่มี DUMMY)
+local pinCFrame = nil
+
+-- วาร์ปไปยืนกลางจุดเทรนนั้น แล้วจับตัวไว้ถ้าจุดนั้นไม่มี DUMMY
 local function warpToTrain(areaId)
     local char = player.Character
     if not char or not getHRP() then return false end
@@ -508,12 +522,21 @@ local function warpToTrain(areaId)
     local spot = areas and areas:FindFirstChild(tostring(areaId))
     if not spot then return false end
 
+    local target
+    if spot:IsA("Model") then
+        target = spot:GetPivot()
+    elseif spot:IsA("BasePart") then
+        target = spot.CFrame * CFrame.new(0, 3, 0)
+    else
+        return false
+    end
+
+    -- มี DUMMY = เกมจัดการเอง ไม่ต้องจับ (จับซ้ำจะไปแย่งกับเกม)
+    -- ไม่มี DUMMY = ต้องจับเอง ไม่งั้นตัวละครไหลหลุดจุดแล้วเซิร์ฟเวอร์จะล้าง attribute
+    pinCFrame = findDUMMY(areaId) and nil or target
+
     return pcall(function()
-        if spot:IsA("Model") then
-            char:PivotTo(spot:GetPivot())
-        elseif spot:IsA("BasePart") then
-            char:PivotTo(spot.CFrame * CFrame.new(0, 3, 0))
-        end
+        char:PivotTo(target)
     end)
 end
 
@@ -546,6 +569,23 @@ local trainEnabled = false
 local trainRunning = false
 local currentArea = nil
 local TRAIN_EVERY = 1
+
+-- จับตัวละครไว้ที่จุดตลอดเวลา ตอนที่จุดนั้นไม่มี DUMMY ให้เกมล็อกให้
+--   ทำแบบเดียวกับที่เกมทำเอง (TrainCTRL.lua:147-152 คือ Character:PivotTo ทุกเฟรม)
+--   เก็บแค่ตำแหน่ง ไม่เปลี่ยนหัวหน้าตัวละคร จะได้ไม่กระตุก
+task.spawn(function()
+    while true do
+        if trainEnabled and pinCFrame then
+            local hrp = getHRP()
+            if hrp then
+                pcall(function()
+                    hrp.CFrame = pinCFrame * hrp.CFrame.Rotation
+                end)
+            end
+        end
+        task.wait()
+    end
+end)
 
 local function trainLoop()
     while trainEnabled do
@@ -798,6 +838,7 @@ function AutoFarm.register(context)
                     if currentArea and currentTrainArea() == currentArea then
                         player:SetAttribute("AutoTrainAreaID", nil)
                     end
+                    pinCFrame = nil
                     currentArea = nil
                 end
                 setTrain(value)
