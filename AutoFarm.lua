@@ -1,4 +1,4 @@
--- Version 8.08
+-- Version 8.25
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -378,7 +378,7 @@ local function pickOre(ore)
     if not prompt or not prompt.Enabled then return false end
 
     firePrompt(prompt)
-    if waitOreGone(ore, 0.5) then return true end
+    if waitOreGone(ore, 0.4) then return true end
 
     -- วิธีที่สอง: กด prompt เอง ต้องอยู่ใกล้พอถึงจะผ่าน (เราดึงมาใกล้แล้ว)
     local ok = pcall(function()
@@ -392,7 +392,7 @@ local function pickOre(ore)
         return false
     end
 
-    return waitOreGone(ore, 0.8)
+    return waitOreGone(ore, 0.6)
 end
 
 -- อ่านจำนวนของในกระเป๋า / ขนาดกระเป๋า -> count, max
@@ -446,8 +446,6 @@ local function collectOres()
     if not cache then return 0 end
 
     -- 1) รวบรวมแร่ที่ตกอยู่ แล้วเรียงจากราคาแพงสุดไปถูกสุด
-    --    ของที่ไม่ใช่แร่ (เช่นก้อนเสริม) ชื่อไม่ตรง Ore_ตัวเลข -> ข้ามไป
-    --    เพราะมันถูกเกมดูดเข้าตัวเองอยู่แล้วใน 1.2 วิ (OreUtils.lua:89-99)
     local ores = {}
     for _, model in ipairs(cache:GetChildren()) do
         if model:IsA("Model") and model.Name:match("^Ore_%d+$") then
@@ -460,19 +458,21 @@ local function collectOres()
         return getOrePrice(a.Name) > getOrePrice(b.Name)
     end)
 
-    -- 2) เก็บทีละชิ้นจากแพงสุด จนกว่ากระเป๋าจะเต็ม
-    --    ของที่อยู่ไกลจะถูกดึงมาวางข้างตัวก่อน จึงไม่ต้องวาร์ปไปหาเลย
-    --    ชิ้นแรกที่เก็บไม่ได้ = วิธีนี้ใช้ไม่ได้จริง หยุดเลย ไม่เสียเวลายิงที่เหลือ
-    local picked = 0
+    -- 2) ดึงแร่ที่อยู่ไกลทั้งหมดมาวางใกล้ในรอบเดียว (ลด task.wait ต่อชิ้น)
     for _, ore in ipairs(ores) do
-        -- กระเป๋าเต็มแล้ว -> เก็บต่อไม่ได้อยู่ดี ให้ข้ามไป เกมจะจัดการที่เหลือตอน ExitFight
         local count, max = getPack()
         if count and max and count >= max then break end
-
         if not oreIsNear(ore) then
             pullOreNear(ore)
-            task.wait(0.05)
         end
+    end
+    task.wait(0.05)
+
+    -- 3) เก็บทีละชิ้นจากแพงสุด
+    local picked = 0
+    for _, ore in ipairs(ores) do
+        local count, max = getPack()
+        if count and max and count >= max then break end
 
         if pickOre(ore) then
             picked = picked + 1
@@ -481,7 +481,6 @@ local function collectOres()
         end
     end
 
-    -- 3) แจ้งสาเหตุที่เก็บไม่ได้ ครั้งเดียวพอ ไม่งั้นจะขึ้นทุกรอบ
     if picked == 0 and #ores > 0 and not collectWarned then
         collectWarned = true
         collectWarnMsg = fireError
@@ -595,7 +594,9 @@ local trainRunning = false
 local currentArea = nil
 -- ตรวจถี่แค่ไหน = ตอนเกมล้าง attribute เราจะได้ตั้งคืนได้เร็ว ชะงักน้อยลง
 -- แต่ไม่ต้องถี่เกินนี้ เพราะตอนตั้งค่าใหม่ เกมเริ่มนับการเทรนใหม่จากศูนย์
-local TRAIN_EVERY = 0.25
+local TRAIN_EVERY = 0.5
+local lastTrainChange = 0
+local TRAIN_CHANGE_COOLDOWN = 0.4
 
 local function trainLoop()
     while trainEnabled do
@@ -608,8 +609,12 @@ local function trainLoop()
                 if cur ~= best then
                     -- ตั้ง AutoTrainAreaID เฉย ๆ ไม่ต้องวาร์ป
                     --   เกมยังคำนวณตัวคูณตามจุดนั้น แม้ยืนอยู่นอกจุดก็ตาม
-                    enterTrainArea(best)
-                    currentArea = best
+                    local t = os.clock()
+                    if (t - lastTrainChange) >= TRAIN_CHANGE_COOLDOWN then
+                        enterTrainArea(best)
+                        currentArea = best
+                        lastTrainChange = t
+                    end
                 end
             end
             task.wait(TRAIN_EVERY)
