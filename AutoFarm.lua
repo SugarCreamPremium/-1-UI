@@ -1,4 +1,4 @@
--- Version 11.43
+-- Version 11.50
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -599,22 +599,64 @@ local TRAIN_EVERY = 0.2
 -- ============================================
 -- กันภาพเบลอ
 -- ============================================
--- เกมเปิด BlurEffect ตอนเปลี่ยนกล้อง/เข้า-ออกจุดเทรน (UiController.lua)
---   ถ้าปล่อยไว้จะเบลอวนไป จึงต้องปิดให้ทันทีทุกรอบของลูป
+-- ขอแก้ก่อน เพราะเดิมใส่ชื่อ instance ผิดตัว
+--   เบลอตอน Auto Train มาจาก Lighting:TrainDOF ไม่ใช่ Lighting:Blur
+--     TrainCTRL.StartAutoTrain:139-140  ->  Lighting:WaitForChild("TrainDOF").Enabled = true
+--     TrainCTRL.ExitAutoTrain:158-159   ->  TrainDOF.Enabled = false
+--   ส่วน Lighting:Blur เป็นของ UIController เปิดตอนเปิดหน้าเมนู ไม่เกี่ยวกับการเทรน
+--     (UIController.lua:10-17, 69, 74)
+--   ตัว DeepField ชื่อ TrainDOF เป็นตัวเดียวที่เกิดพร้อม Auto Train
+--     ทำให้เดิมไล่แค่ Blur/DepthOfField แล้วเลยไม่เคยได้ผล
+--
+-- วิธีกัน: ไล่ปิดทุกอินสแตนซ์ใน Lighting ที่ทำให้ภาพเบลอ (BlurEffect / DepthOfFieldEffect)
+--   ชื่ออะไรก็ได้ ไม่ต้องเดาชื่อ -> ต่อ RenderStepped ค้างไว้ตอนเปิด Auto Train
+--   ปิดเมื่อกด Auto Train ออก (ไม่งั้นเมนูของเกมจะไม่เบลอตามปกติ)
+--
 -- วางไว้ก่อน trainLoop เพราะ Lua มองไม่เห็น local function ที่ประกาศ "หลัง" จุดที่เรียก
 --   (ถ้าเรียกก่อนประกาศ จะได้ nil แล้ว error "attempt to call a nil value"
 --    ทำให้ task.spawn(trainLoop) ตายทันที = กด Auto Train แล้วไม่เกิดอะไรเลย)
 local function clearBlur()
     pcall(function()
         local Lighting = game:GetService("Lighting")
-        local Blur = Lighting:FindFirstChild("Blur")
-        if Blur then
-            Blur.Enabled = false
-            Blur.Size = 0
+        for _, obj in ipairs(Lighting:GetChildren()) do
+            -- ไล่ตามคลาส (ครอบคลุม Blur/DepthOfField ทุกชื่อ รวมถึงตัวที่เกมสร้างใหม่)
+            if obj:IsA("BlurEffect") or obj:IsA("DepthOfFieldEffect") then
+                if obj.Enabled then
+                    obj.Enabled = false
+                end
+            elseif obj.Name == "TrainDOF" and obj.Enabled then
+                -- กันเหนือ: ถ้าวันหนึ่งเกมเปลี่ยนคลาส ไม่ให้หลุด
+                obj.Enabled = false
+            end
         end
-        local DOF = Lighting:FindFirstChild("DepthOfField")
-        if DOF then DOF.Enabled = false end
     end)
+end
+
+local blurConn = nil
+
+-- ปิดทุกเฟรม ไม่ใช่ทุก 0.2 วินาที
+--   เพราะเกมสั่ง TrainDOF.Enabled = true ตอนเปลี่ยนจุดเทรน ซึ่งเกิดพร้อมตัวละครวาร์ป
+--   ถ้ารอจนลูปรอบถัดไป ภาพจะเบลอค้างให้เห็นก่อนอย่างน้อย 1 เฟรมถึงหลายเฟรม
+local function startBlurGuard()
+    if blurConn then return end
+    pcall(function()
+        local RunService = game:GetService("RunService")
+        blurConn = RunService.RenderStepped:Connect(clearBlur)
+    end)
+    if not blurConn then
+        -- สำรอง: บาง executor ต่อ RenderStepped ไม่ได้ ใช้ Heartbeat แทน
+        pcall(function()
+            local RunService = game:GetService("RunService")
+            blurConn = RunService.Heartbeat:Connect(clearBlur)
+        end)
+    end
+    clearBlur()
+end
+
+local function stopBlurGuard()
+    if not blurConn then return end
+    pcall(function() blurConn:Disconnect() end)
+    blurConn = nil
 end
 
 local function trainLoop()
@@ -843,11 +885,14 @@ local function setTrain(value)
     if trainEnabled then
         if not trainRunning then
             trainRunning = true
+            -- ค้างกันเบลอไว้ตลอดช่วงที่ Auto Train เปิดอยู่
+            startBlurGuard()
             pcall(function() notify("Auto Train เริ่มทำงาน", "จะใช้จุดเทรนที่ดีที่สุด") end)
             task.spawn(trainLoop)
         end
     else
         trainRunning = false
+        stopBlurGuard()
     end
 end
 
