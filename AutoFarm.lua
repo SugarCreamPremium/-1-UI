@@ -1,5 +1,4 @@
--- Version 6.21
-print("Test")
+-- Version 6.26
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: เข้าสเตจ -> ฆ่ามอนครบ -> เก็บของ -> กลับจุดเกิด -> วนต่อ
@@ -560,7 +559,11 @@ end
 local function enterTrainArea(areaId, needWarp)
     if needWarp and not warpToTrain(areaId) then return false end
     if currentTrainArea() ~= areaId then
-        player:SetAttribute("AutoTrainAreaID", areaId)
+        -- ต้องตั้งเป็น string ไม่ใช่ตัวเลข
+        --   เกมเก็บค่านี้เป็นชื่อ Part (string) มาตั้งแต่แรก ดูจาก BalanceUtils.lua:99
+        --     ที่ต้อง tonumber(Attribute) ก่อนคำนวณ แปลว่าค่าที่เกมอ่านเป็น string
+        --   ถ้าส่งตัวเลขเข้าไป เซิร์ฟเวอร์จะมองไม่ออกว่าจุดไหน แล้วล้าง attribute ทิ้งทันที
+        player:SetAttribute("AutoTrainAreaID", tostring(areaId))
     end
     return true
 end
