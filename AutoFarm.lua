@@ -1,4 +1,4 @@
--- Version 9.43
+-- Version 9.56
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -600,6 +600,7 @@ local TRAIN_CHANGE_COOLDOWN = 0.4
 
 local function trainLoop()
     while trainEnabled do
+        clearBlur()
         if not getHRP() then
             task.wait(1)
         else
@@ -714,8 +715,22 @@ local function notify(title, desc)
 end
 
 
+local function clearBlur()
+    pcall(function()
+        local Lighting = game:GetService("Lighting")
+        local Blur = Lighting:FindFirstChild("Blur")
+        if Blur then
+            Blur.Enabled = false
+            Blur.Size = 0
+        end
+        local DOF = Lighting:FindFirstChild("DepthOfField")
+        if DOF then DOF.Enabled = false end
+    end)
+end
+
 local function runRound()
     -- 1) รอจนฟื้นฟู (ถ้าตายอยู่ ไม่ต้องทำอะไรรอบนี้)
+    clearBlur()
     if player:GetAttribute("Dead") then
         waitUntil(function() return not player:GetAttribute("Dead") end, 30)
         return
@@ -800,6 +815,7 @@ end
 
 local function farmLoop()
     while running do
+        clearBlur()
         runRound()
         -- กันหลุดลูกตอนผู้ใช้กดปิดสวิตช์ครั้งแรก (ยังไม่ได้ทำอะไรเลย)
         if running then task.wait(0.5) end
@@ -809,18 +825,26 @@ end
 
 local function setRunning(value)
     running = value == true
-    if running and not farmRunning then
-        farmRunning = true
-        task.spawn(farmLoop)
+    if running then
+        if not farmRunning then
+            farmRunning = true
+            task.spawn(farmLoop)
+        end
+    else
+        farmRunning = false
     end
 end
 
 -- เปิด/ปิด Auto Train
 local function setTrain(value)
     trainEnabled = value == true
-    if trainEnabled and not trainRunning then
-        trainRunning = true
-        task.spawn(trainLoop)
+    if trainEnabled then
+        if not trainRunning then
+            trainRunning = true
+            task.spawn(trainLoop)
+        end
+    else
+        trainRunning = false
     end
 end
 
@@ -862,22 +886,10 @@ function AutoFarm.register(context)
 
     local farmSection = tab:Section({Title = "Farm", Opened = true})
     if farmSection then
-        farmSection:Paragraph({Title = "Stage ปัจจุบัน", Desc = display[1] or selectedStage or ""})
-        farmSection:Button({Title = "Stage <", Callback = function()
+        farmSection:Select({Title = "เลือก Stage", Desc = "เลือกด่านที่ต้องการฟาร์ม", Options = display, Callback = function(val)
             local idx = 0
-            for i, n in ipairs(STAGE_NAMES) do if n == selectedStage then idx = i; break end end
-            if idx <= 1 then idx = #STAGE_NAMES else idx = idx - 1 end
-            selectedStage = STAGE_NAMES[idx]
-            local disp = (selectedStage or ""):gsub("_", " ")
-            pcall(function() windUI:Notify({Title="เลือก Stage", Content=disp, Duration=2}) end)
-        end})
-        farmSection:Button({Title = "Stage >", Callback = function()
-            local idx = 0
-            for i, n in ipairs(STAGE_NAMES) do if n == selectedStage then idx = i; break end end
-            if idx == 0 or idx >= #STAGE_NAMES then idx = 1 else idx = idx + 1 end
-            selectedStage = STAGE_NAMES[idx]
-            local disp = (selectedStage or ""):gsub("_", " ")
-            pcall(function() windUI:Notify({Title="เลือก Stage", Content=disp, Duration=2}) end)
+            for i, d in ipairs(display) do if d == val then idx = i; break end end
+            if idx ~= 0 then selectedStage = STAGE_NAMES[idx] end
         end})
         farmSection:Toggle({Title = "เริ่ม Auto Farm", Desc = "ฟาร์มรอบอัตโนมัติ (ไม่วาร์ปไปหาของ)", Value = false, Callback = setRunning})
     end
