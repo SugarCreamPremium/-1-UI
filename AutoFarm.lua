@@ -1,4 +1,4 @@
--- Version 9.56
+-- Version 10.04
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -886,7 +886,7 @@ function AutoFarm.register(context)
 
     local farmSection = tab:Section({Title = "Farm", Opened = true})
     if farmSection then
-        farmSection:Select({Title = "เลือก Stage", Desc = "เลือกด่านที่ต้องการฟาร์ม", Options = display, Callback = function(val)
+        farmSection:DropdownMenu({Title = "เลือก Stage", Desc = "เลือกด่านที่ต้องการฟาร์ม", Options = display, Callback = function(val)
             local idx = 0
             for i, d in ipairs(display) do if d == val then idx = i; break end end
             if idx ~= 0 then selectedStage = STAGE_NAMES[idx] end
