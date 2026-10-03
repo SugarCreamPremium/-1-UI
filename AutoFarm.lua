@@ -1,4 +1,4 @@
--- Version 9.22
+-- Version 9.43
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -594,7 +594,7 @@ local trainRunning = false
 local currentArea = nil
 -- ตรวจถี่แค่ไหน = ตอนเกมล้าง attribute เราจะได้ตั้งคืนได้เร็ว ชะงักน้อยลง
 -- แต่ไม่ต้องถี่เกินนี้ เพราะตอนตั้งค่าใหม่ เกมเริ่มนับการเทรนใหม่จากศูนย์
-local TRAIN_EVERY = 0.5
+local TRAIN_EVERY = 0.2
 local lastTrainChange = 0
 local TRAIN_CHANGE_COOLDOWN = 0.4
 
@@ -862,10 +862,22 @@ function AutoFarm.register(context)
 
     local farmSection = tab:Section({Title = "Farm", Opened = true})
     if farmSection then
-        farmSection:Dropdown({Title = "เลือก Stage", Desc = "เลือกด่านที่ต้องการฟาร์ม", Options = display, Callback = function(val)
+        farmSection:Paragraph({Title = "Stage ปัจจุบัน", Desc = display[1] or selectedStage or ""})
+        farmSection:Button({Title = "Stage <", Callback = function()
             local idx = 0
-            for i, d in ipairs(display) do if d == val then idx = i; break end end
-            if idx ~= 0 then selectedStage = STAGE_NAMES[idx] end
+            for i, n in ipairs(STAGE_NAMES) do if n == selectedStage then idx = i; break end end
+            if idx <= 1 then idx = #STAGE_NAMES else idx = idx - 1 end
+            selectedStage = STAGE_NAMES[idx]
+            local disp = (selectedStage or ""):gsub("_", " ")
+            pcall(function() windUI:Notify({Title="เลือก Stage", Content=disp, Duration=2}) end)
+        end})
+        farmSection:Button({Title = "Stage >", Callback = function()
+            local idx = 0
+            for i, n in ipairs(STAGE_NAMES) do if n == selectedStage then idx = i; break end end
+            if idx == 0 or idx >= #STAGE_NAMES then idx = 1 else idx = idx + 1 end
+            selectedStage = STAGE_NAMES[idx]
+            local disp = (selectedStage or ""):gsub("_", " ")
+            pcall(function() windUI:Notify({Title="เลือก Stage", Content=disp, Duration=2}) end)
         end})
         farmSection:Toggle({Title = "เริ่ม Auto Farm", Desc = "ฟาร์มรอบอัตโนมัติ (ไม่วาร์ปไปหาของ)", Value = false, Callback = setRunning})
     end
