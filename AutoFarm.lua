@@ -1,4 +1,4 @@
--- Version 7.51
+-- Version 7.56
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -207,6 +207,29 @@ local function stripEnemyHpBar(enemy)
     end
 end
 
+-- ============================================
+-- มอน SuperLoot: ตัวที่กินเวลา 0.8 วิต่อรอบ
+-- ============================================
+-- มอน SuperLoot ไม่ได้อยู่ใน EnemyTab ของสเตจ แต่มีคนฟัง EnemyHitBE แยกอีกตัว
+--   (SuperLootManager.client.lua:68-90)
+-- และตัวนั้นเขียนทับดาเมจเองเป็น "เปอร์เซ็นต์" ก่อนส่งต่อให้ HPCTRL
+--   a3.Damage = v1                      (บรรทัด 72)
+--   EnemyCTRL.HurtEnemy(a1, v1, a3)     (บรรทัด 74)
+-- โดย v1 เป็น string แบบ "100%"
+--   -> HPCTRL.DamageOnce แปลงค่าที่ไม่ใช่ตัวเลขเป็น 1
+--     (HPCTRL.lua:88-101  if tonumber(a2) == nil then a2 = 1 end)
+--   = มอน SuperLoot โดนดาเมจทีละ 1 ทุกครั้งที่ตี ต้องตีหลายสิบเฟรมจึงตาย
+--   นั่นแหละคือที่ค้าง 0.8 วิต่อรอบ ไม่ใช่การฆ่าช้า
+--
+-- แก้โดยตัดเลือดมันให้หมดก่อนยิง ดาเมจ 1 ก็พอจะตายทันที
+--   และของจากมอนตัวนี้ยังได้ตามเดิม เพราะ SuperLootManager คือคนสร้างของเอง
+--     (SuperLootManager.client.lua:76-88  KillSuperLootRE + OreUtils.CreateOres)
+local SUPER_LOOT_ID = "Super_1"
+
+local function isSuperLoot(enemy)
+    return enemy:GetAttribute("EnemyID") == SUPER_LOOT_ID
+end
+
 local function killAllEnemies()
     local folder = getEnemyFolder()
     if not folder then return end
@@ -224,9 +247,14 @@ local function killAllEnemies()
             --   ยิงแล้วเกมตัดเลือดให้เองด้วย damage = HP + 1 ซึ่งเกินพอดีอยู่แล้ว
             --     (HPCTRL.DamageOnce -> UpdateHPValue: hp - (hp+1) = ติดลบ = ตาย
             --      HPCTRL.lua:88-101, 113-124)
-            local damage = 1
             local hp = enemy:FindFirstChild("HPValue")
-            if hp and hp:IsA("NumberValue") then
+            local damage = 1
+            if isSuperLoot(enemy) then
+                -- ต้องตัดเลือดเอง เพราะเกมบังคับให้ SuperLoot ได้ดาเมจทีละ 1 (ดูหัวฟังก์ชัน)
+                if hp and hp:IsA("NumberValue") then
+                    pcall(function() hp.Value = 0 end)
+                end
+            elseif hp and hp:IsA("NumberValue") then
                 damage = (tonumber(hp.Value) or 0) + 1
             end
             if damage < 1 then damage = 1 end
