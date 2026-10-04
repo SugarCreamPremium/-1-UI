@@ -1,4 +1,4 @@
--- Version 6.15
+-- Version 6.27
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -145,8 +145,13 @@ end
 -- ============================================
 -- ExitFightBE ส่งต่ออาร์กิวเมนต์ให้ครบทั้งสองตัว
 --   (StageManager.client.lua:51-54 -> StageUtils.ExitFight(p1, p2))
---   p1 = true  เก็บของที่เหลือบนพื้น (ClaimedAllOreRE:FireServer)
+--   p1 = true  สั่งให้เซิร์ฟเวอร์เก็บของที่เหลือ (ClaimedAllOreRE:FireServer)
 --   p2 = true  ไม่วาร์ปกลับจุดเกิด
+--
+--   ต้องส่ง p1 = false เสมอ
+--     ไม่ว่าเกมจะ ClaimedAllOreRE ยังไงก็ตาม ตอนออกมันเรียก OreUtils.CleanOres()
+--     ซึ่งลบแร่ที่ยังไม่ได้เก็บทิ้งทั้งหมด (StageUtils.lua:157)
+--     ของที่ตกลงพื้นต้องเก็บเองด้วย collectOres เท่านั้น ไม่งั้นเสียของฟรี
 -- ค่า p2 สำคัญมาก เพราะ ExitFight ลงท้ายด้วย TranslateUtils.ToSpawn เสมอ
 --   (StageUtils.lua:195-197) ถ้าไม่กด p2 = true เราจะโดนวาร์ปกลับทันทีหลังออก
 local function exitFight(claimOres, skipWarp)
@@ -203,13 +208,20 @@ local function stageDone()
     return #cache:GetChildren() > 0
 end
 
--- ตอนนี้มีมอนกี่ตัวในสเตจ (ใช้เช็คว่าเข้าสเตจสำเร็จหรือยัง)
+-- นับเฉพาะมอนที่ยังมีชีวิตอยู่ ไม่นับซากที่ตายแล้วแต่ยังไม่ถูกลบ
+--   ตายแล้วเกมตั้ง Model:SetAttribute("Dead", true) แล้วหน่วงลบอีก 3 วินาที
+--     (EnemyCTRL.lua:222  Model:SetAttribute("Dead", true)
+--      EnemyCTRL.lua:232  task.delay(3, u0.DestroyEnemyData, a1))
+--   ถ้านับรวมซากด้วย killWave จะรอค้าง 3 วินาทีทุกรอบมอนเปล่า ๆ
+--   นอกจากนี้มอนที่ยังไม่ตายก็ต้องนับ จะได้รู้ว่ารอบมอนจบแล้วหรือยัง
 local function countEnemies()
     local folder = getEnemyFolder()
     if not folder then return 0 end
     local count = 0
     for _, enemy in ipairs(folder:GetChildren()) do
-        if enemy:IsA("Model") then count = count + 1 end
+        if enemy:IsA("Model") and not enemy:GetAttribute("Dead") then
+            count = count + 1
+        end
     end
     return count
 end
@@ -807,16 +819,20 @@ end
 --   1) ตัวบอกสถานะลูปต้องคืน false เสมอ
 --      เดิม error ครั้งเดียวก็ทำให้ coroutine ตายค้าง ๆ rebirthRunning ค้างเป็น true
 --      ตั้งแต่นั้นสวิตช์จะเปิดลูปใหม่ไม่ได้อีก เพราะเงื่อนไข not rebirthRunning ไม่ผ่าน
---   2) ต้องแยก "รอเลเวล" ออกจาก "ยิงแล้วไม่ขึ้น" ให้ชัด
---      สองเรื่องนี้แก้คนละทาง ถ้าไม่แยกจะเห็นเหมือนกันหมดว่า "ไม่ทำงาน"
+--   2) ยิงติดกันเรื่อย ๆ ไม่มีวันหยุด
+--      เดิมพอยิงไม่ขึ้น 3 ครั้งก็เลิกยิง แล้วไปนับต่อจนครบ 9 ครั้งถึงจะเริ่มใหม่
+--      ตอนนั้นกดสวิตช์ปิด-เปิดก็ยังไม่ช่วย เพราะตัวนับไม่ถูกล้าง
+--      ตอนนี้ยิงทุกรอบจนกว่าจะสำเร็จหรือเลเวลไม่พอ ห้ามมีทางหยุดยิง
 --   3) ถ้ายิงติดกันหลายครั้งแล้วเลขยังไม่ขยับ = เซิร์ฟเวอร์ปฏิเสธ ไม่ใช่เลเวลไม่พอ
---      ข้อน่าจะเป็นเพราะยังอยู่ในสเตจ -> ให้ออกจากสเตจก่อนยิงใหม่หนึ่งครั้ง
+--      ข้อน่าจะเป็นเพราะยังอยู่ในสเตจ -> ออกจากสเตจเป็นครั้งคราว
+--      แต่ต้องไม่บ่อยเกินไป ไม่งั้นจะไปตัดการฟาร์มทุกไม่กี่วินาที
 --      (ดัมป์มีแต่โค้ดฝั่ง client ตรงนี้จึงเป็นการกันไว้ ไม่ใช่ข้อเท็จจริงที่ยืนยันได้)
 local MAX_REBIRTH = 42
 local NEED_LEVEL_STEP = 25
 local REBIRTH_EVERY = 0.5
 local REBIRTH_WAIT = 1.5     -- รอให้เลขขยับหลังยิง ไม่รอนานเกินไป ไม่งั้นลูปจะค้าง
-local FAIL_LIMIT = 3        -- ยิงติดกันกี่ครั้งแล้วเลขยังไม่ขยับ ถือว่าเซิร์ฟเวอร์ปฏิเสธ
+local ESCAPE_EVERY = 20     -- ยิงติดกันกี่ครั้งแล้วยังไม่ขึ้น ถึงลองออกจากสเตจหนึ่งครั้ง
+                          --   ยิงไม่งั้นหยุด ไม่ว่าจะออกจากสเตจหรือไม่ก็ตาม
 
 local function canRebirth()
     local rebirth = getRebirth()
@@ -847,22 +863,18 @@ local function rebirthLoop()
                 return
             end
 
-            -- ยิงซ้ำแล้วไม่ขึ้นหลายครั้ง = เซิร์ฟเวอร์ปฏิเสธ ไม่ใช่รอเลเวล
-            --   ออกจากสเตจก่อนหนึ่งครั้ง แล้วค่อยลองใหม่ในรอบถัดไป
-            if rebirthFails >= FAIL_LIMIT then
+            -- ยิงซ้ำแล้วไม่ขึ้นนาน ๆ = เซิร์ฟเวอร์ปฏิเสธ ไม่ใช่รอเลเวล
+            --   ลองออกจากสเตจเป็นครั้งคราว แต่ต้องไม่หยุดยิง
+            --   ยิงต่อเสมอทั้งรอบนี้ ไม่ว่าจะออกจากสเตจสำเร็จหรือไม่ก็ตาม
+            if rebirthFails > 0 and rebirthFails % ESCAPE_EVERY == 0 then
                 if player:GetAttribute("IntoFight") then
-                    exitFight(true, true)
+                    exitFight(false, true)
                     local waited = 0
                     while waited < 5 and player:GetAttribute("IntoFight") do
                         task.wait(0.05)
                         waited = waited + 0.05
                     end
                 end
-                -- กันลูปค้าง ถ้าออกจากสเตจไม่ได้ในเวลาที่กำหนด
-                if rebirthFails >= FAIL_LIMIT * 3 then
-                    rebirthFails = 0
-                end
-                return
             end
 
             local remote = TryRebirthRE or getRemote("Rebirth", "TryRebirthRE")
@@ -898,11 +910,6 @@ local running = false
 local farmRunning = false
 local selectedStage = STAGE_NAMES[1]
 
--- เก็บของเอง หรือปล่อยให้ ClaimedAllOreRE จัดการตอนออกจากสเตจ
---   ปิดไว้ = เร็วกว่า เพราะไม่ต้องเดินเก็บทีละชิ้น
---   ของที่เก็บเองไม่ทันจะถูก ClaimedAllOreRE เก็บให้ทั้งหมดอยู่ดี
---     (StageUtils.lua:168  if a1 then ClaimedAllOreRE:FireServer() end)
-local collectManually = true
 
 -- รอจนกว่าเงื่อนไขจะเป็นจริง แต่ไม่เกิน timeout -> คืน true ถ้าสำเร็จ
 local function waitUntil(check, timeout, step)
@@ -1042,7 +1049,7 @@ local function runRound()
     --      ทำให้ EnemyHitBE ยิงแล้วไม่มีใครรับ = ไม่มีดาเมจเลย
     --    ส่ง skipWarp = true เพราะเราไม่วาร์ปไปไหนแล้ว ไม่ต้องโดนลากกลับจุดเกิด
     if player:GetAttribute("IntoFight") then
-        exitFight(true, true)
+        exitFight(false, true)
         if not waitOutOfFight(10) then return end
     end
 
@@ -1068,11 +1075,21 @@ local function runRound()
     startTimeBoost()
     while running do
         if not killWave(30) then break end
-        if collectManually then
-            local picked = collectOres()
-            if picked == 0 and collectWarnMsg and not collectWarned then
-                notify("เก็บของไม่ได้", collectWarnMsg)
-            end
+
+        -- ของยังไม่ตกทันทีที่มอนตาย
+        --   FinishStage รอคำตอบจากเซิร์ฟเวอร์ก่อนค่อยสร้างของทิ้งพื้น
+        --     (StageUtils.lua:206-208  repeat task.wait() until FinishedOreTab
+        --      StageUtils.lua:212      OreUtils.CreateOres)
+        --   ถ้าไม่รอ จะไปเก็บตอนที่ยังไม่มีของเลย = เสียของทั้งรอบนั้น
+        waitUntil(function() return stageDone() end, 3, 0.05)
+
+        -- เก็บของทุกชิ้นด้วยตัวเองเสมอ
+        --   ออกจากสเตจแล้ว OreUtils.CleanOres() ลบแร่ที่ยังไม่ได้เก็บทิ้งทั้งหมด
+        --     (StageUtils.lua:157)  ปล่อยให้เกมเก็บเองคือไม่ได้ของ ถือว่าทิ้งของฟรี
+        --   และ ClaimedAllOreRE ยิงแล้วของก็ถูกล้างทิ้งเหมือนกัน ไม่ต้องยิง
+        local picked = collectOres()
+        if picked == 0 and collectWarnMsg and not collectWarned then
+            notify("เก็บของไม่ได้", collectWarnMsg)
         end
         -- รอมอนชุดถัดไป ไม่เกิน 4 วิ
         --   เกิด = ได้ของอีกชุด, ไม่เกิด = สเตจนี้เกิดซ้ำไม่ได้ -> ออกไปเข้าใหม่แทน
@@ -1080,12 +1097,12 @@ local function runRound()
     end
     stopTimeBoost()
 
-    -- 7) ออกจากสเตจ -> ExitFight ยิง ClaimedAllOreRE ให้เซิร์ฟเวอร์
-    --    แล้วล้างของที่เหลือทิ้ง (StageUtils.lua:189-197)
-    --    ของที่เก็บเองไม่ทันจะถูก ClaimedAllOreRE เก็บให้ทั้งหมด
+    -- 7) ออกจากสเตจ (ไม่ยิง ClaimedAllOreRE)
+    --    ExitFight จะเรียก OreUtils.CleanOres() ลบแร่ที่ยังไม่ได้เก็บทิ้งทั้งหมด
+    --      (StageUtils.lua:157) เก็บเองไว้แล้วข้างบนทุกชิ้นตอนนี้
     --    skipWarp = true เพราะเราไม่วาร์ปไปไหน ไม่ต้องโดนลากกลับจุดเกิด
     if player:GetAttribute("IntoFight") then
-        exitFight(true, true)
+        exitFight(false, true)
         waitOutOfFight(10)
     end
 end
@@ -1191,12 +1208,6 @@ function AutoFarm.register(context)
             end,
         })
         farmSection:Toggle({Title = "เริ่ม Auto Farm", Desc = "ฟาร์มรอบอัตโนมัติ (ไม่วาร์ปไปหาของ)", Value = false, Callback = setRunning})
-        farmSection:Toggle({
-            Title = "เก็บของเอง",
-            Desc = "เปิด = เดินไปกดเก็บทีละชิ้น   ปิด = ปล่อยให้เกมเก็บให้ทั้งหมดตอนออกสเตจ (เร็วกว่า)",
-            Value = true,
-            Callback = function(v) collectManually = (v == true) end,
-        })
     end
 
 end
