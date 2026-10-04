@@ -1,4 +1,4 @@
--- Version 6.33
+-- Version 6.44
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -145,13 +145,15 @@ end
 -- ============================================
 -- ExitFightBE ส่งต่ออาร์กิวเมนต์ให้ครบทั้งสองตัว
 --   (StageManager.client.lua:51-54 -> StageUtils.ExitFight(p1, p2))
---   p1 = true  สั่งให้เซิร์ฟเวอร์เก็บของที่เหลือ (ClaimedAllOreRE:FireServer)
+--   p1 = true  บอกเซิร์ฟเวอร์ว่าออกจากสเตจแล้ว (ClaimedAllOreRE:FireServer)
 --   p2 = true  ไม่วาร์ปกลับจุดเกิด
 --
---   ต้องส่ง p1 = false เสมอ
---     ไม่ว่าเกมจะ ClaimedAllOreRE ยังไงก็ตาม ตอนออกมันเรียก OreUtils.CleanOres()
---     ซึ่งลบแร่ที่ยังไม่ได้เก็บทิ้งทั้งหมด (StageUtils.lua:157)
---     ของที่ตกลงพื้นต้องเก็บเองด้วย collectOres เท่านั้น ไม่งั้นเสียของฟรี
+--   ตอนออกเกมจะเรียก OreUtils.CleanOres() เสมอ ไม่ว่า p1 จะเป็นอะไร
+--     ซึ่ง (1) ลบแร่ที่ยังอยู่บนพื้น และ (2) รีเซ็ตจำนวนช่องที่ใช้เป็น 0
+--       (StageUtils.lua:157  OreUtils.lua:95-98  LeftInfoGUI.UpdateOrePack(0))
+--     = กระเป๋าว่าง พร้อมรับของรอบถัดไป
+--   ของที่ตกลงพื้นต้องเก็บเองด้วย collectOres ให้เสร็จก่อน
+--     เพราะ CleanOres() มาทันทีหลัง ClaimedAllOreRE แล้วลบสิ่งที่เหลือทิ้ง
 -- ค่า p2 สำคัญมาก เพราะ ExitFight ลงท้ายด้วย TranslateUtils.ToSpawn เสมอ
 --   (StageUtils.lua:195-197) ถ้าไม่กด p2 = true เราจะโดนวาร์ปกลับทันทีหลังออก
 local function exitFight(claimOres, skipWarp)
@@ -1037,21 +1039,26 @@ local function runRound()
     --   ถ้าไม่รอ จะไปเก็บตอนที่ยังไม่มีของเลย = เสียของทั้งรอบนั้น
     waitUntil(function() return stageDone() end, 3, 0.05)
 
-    -- 7) เก็บของทุกชิ้นด้วยตัวเองเสมอ
-    --    ออกจากสเตจแล้ว OreUtils.CleanOres() ลบแร่ที่ยังไม่ได้เก็บทิ้งทั้งหมด
-    --      (StageUtils.lua:157)  ปล่อยให้เกมเก็บเองคือไม่ได้ของ ถือว่าทิ้งของฟรี
-    --    และ ClaimedAllOreRE ยิงแล้วของก็ถูกล้างทิ้งเหมือนกัน ไม่ต้องยิง
+    -- 7) เก็บของทุกชิ้นด้วยตัวเองก่อนเสมอ
+    --    ของเข้ากระเป๋าทันทีที่กดปุ่ม Collect ไม่มีขั้นตอนยืนยันทีหลัง
+    --      (OreUtils.lua:69  u70:InvokeServer(i)  = GetOreRF เข้ากระเป๋าเลย)
+    --    และเก็บได้แค่ทีละจำนวนช่องที่อัป OrePack ไว้ ถ้าช่องเต็มเกมจะไม่เก็บให้
+    --      (OreUtils.lua:60-62  if GetMaxNum("OrePack") <= v1 then showMessage("Pack is full.") return end)
     local picked = collectOres()
     if picked == 0 and collectWarnMsg and not collectWarned then
         notify("เก็บของไม่ได้", collectWarnMsg)
     end
 
-    -- 8) ออกจากสเตจ แล้วเข้าใหม่ในรอบถัดไป
-    --    ExitFight จะเรียก OreUtils.CleanOres() ลบแร่ที่ยังไม่ได้เก็บทิ้งทั้งหมด
-    --      (StageUtils.lua:157) เก็บเองไว้แล้วข้างบนทุกชิ้นตอนนี้
+    -- 8) บอกเซิร์ฟเวอร์ว่า "กลับมาแล้ว" แล้วเข้าสเตจใหม่ในรอบถัดไป
+    --    ส่ง claimOres = true คือยิง Stage.ClaimedAllOreRE ให้เซิร์ฟเวอร์รู้ว่ารอบนี้จบแล้ว
+    --      (StageUtils.lua:154-156  if a1 then u131:FireServer() end)
+    --    ExitFight จะเรียก OreUtils.CleanOres() ต่อทันที ซึ่งรีเซ็ตจำนวนช่องที่ใช้เป็น 0
+    --      (OreUtils.lua:95-98  CleanOres -> LeftInfoGUI.UpdateOrePack(0))
+    --    = กระเป๋าว่างพอจะเก็บของรอบถัดไป
+    --    ต้องเก็บของให้เสร็จก่อนยิง ไม่งั้นของที่ยังอยู่บนพื้นจะโดน CleanOres ทิ้ง
     --    skipWarp = true เพราะเราไม่วาร์ปไปไหน ไม่ต้องโดนลากกลับจุดเกิด
     if player:GetAttribute("IntoFight") then
-        exitFight(false, true)
+        exitFight(true, true)
         waitOutOfFight(10)
     end
 end
