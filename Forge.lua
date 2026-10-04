@@ -1,4 +1,4 @@
--- Version 9.28
+-- Version 10.38
 -- แถบคราฟ (Forge)
 --
 -- กลไกของเกมที่ใช้ (อ่านจากดัมป์):
@@ -33,15 +33,6 @@ local Forge = {}
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local player = Players.LocalPlayer
-
-local windUI = nil
-
-local function notify(title, desc)
-    if not windUI then return end
-    pcall(function()
-        windUI:Notify({Title = title, Content = desc, Duration = 3})
-    end)
-end
 
 -- ============================================
 -- ดึง remote โดยไม่ต้อง require
@@ -293,12 +284,6 @@ local CONFIG_TYPE = {Weapon = "Weapon", Hat = "Armor", Armor = "Armor"}
 -- ช่องอุปกรณ์ที่สวมใส่ได้ ชื่อเดียวกับช่องใน Backpack.equiped
 --   ใช้ไล่สวมใส่ และไล่เป้าหมายการคราฟ (ลำดับตรงนี้คือลำดับที่คราฟ)
 local TARGETS = {"Weapon", "Hat", "Armor"}
-
--- ของดีสุดที่คราฟได้ของแต่ละสาย ใช้แค่ข้อความแจ้งเตือน
---   อาวุธ G_26      Train 708,000,000  Infinite
---   หมวก LHat_16    Power +85%         Eternal
---   เกราะ HArmor_14 Defence +70%      Mythic
-local TARGET_BEST = {Weapon = "G_26", Hat = "LHat_16", Armor = "HArmor_14"}
 
 
 
@@ -617,11 +602,6 @@ local forgeRunning = false
 local forgeEquipBest = true
 local forgeTargets = {Weapon = true, Hat = true, Armor = true}
 
-local TARGET_NAME = {Weapon = "อาวุธ", Hat = "หมวก", Armor = "เกราะ"}
-
--- เคยคราฟของเลเวลสูงสุดของแต่ละสายได้แล้วหรือยัง ใช้กันแจ้งซ้ำ
-local madeBest = {Weapon = false, Hat = false, Armor = false}
-
 local function anyTargetOn()
     for _, name in ipairs(TARGETS) do
         if forgeTargets[name] then return true end
@@ -645,21 +625,15 @@ local function forgeOnce(target)
     local ok, res = pcall(function()
         return ForgeRF:InvokeServer({ConfigType = CONFIG_TYPE[target], UUIDList = ores})
     end)
-    if not ok or type(res) ~= "table" or type(res[1]) ~= "table" then return false end
-
-    local made = res[1]
-    if type(made.ID) ~= "string" then return false end
+    -- ForgeRF คืน {ชิ้นที่ได้, BigType} ชิ้นแรกต้องมี .ID
+    --   (GuiUtils/ForgeGUI.lua:706-715 เอา a1[1].ID ไปหาโมเดลใน Assets)
+    if not ok or type(res) ~= "table" or type(res[1]) ~= "table" or type(res[1].ID) ~= "string" then
+        return false
+    end
 
     -- รอสัญญาณว่ากระเป๋าเปลี่ยนแล้วค่อยไปต่อ แทนการนอนตายตัว
     waitPackChange(3)
     refreshData()
-
-    -- แจ้งของเลเวลสูงสุดที่คราฟได้ ไม่ผูกกับการหา UUID
-    --   เดิมรอหา UUID ก่อน ถ้าหาไม่เจอข้อความนี้จะไม่ขึ้นไปเลย แม้คราฟโดนจริง
-    if made.ID == TARGET_BEST[target] and not madeBest[target] then
-        madeBest[target] = true
-        notify("คราฟได้ของเลเวลสูงสุด", TARGET_BEST[target] .. " (" .. TARGET_NAME[target] .. ")")
-    end
 
     -- ไล่สวมใส่ของที่ดีที่สุดของทุกช่องจากทั้งกระเป๋า
     --   ไม่ใช่แค่ชิ้นที่เพิ่งคราฟได้ เพราะ ForgeRF ไม่คืน UUID
@@ -734,7 +708,6 @@ function Forge.register(context)
     local tab = context.Tab
     if not tab then return end
 
-    windUI = context.WindUI
     refreshRemotes()
     connectUpdate()
     refreshData()
