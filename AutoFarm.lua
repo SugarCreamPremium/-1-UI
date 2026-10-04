@@ -1,4 +1,4 @@
--- Version 8.50
+-- Version 9.54
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -897,40 +897,106 @@ local function trainLoop()
     trainRunning = false
 end
 
+-- วางไว้ตรงนี้ (ก่อน Auto Rebirth) เพราะ Lua มองไม่เห็น local function ที่ประกาศ "หลัง" จุดที่เรียก
+--   ถ้าแจ้งเตือนอยู่ท้ายไฟล์ ลูปรีเบิร์ธจะเรียก notify แล้วได้ nil = error
+--   (เหมือนเรื่อง task.spawn(trainLoop) ที่เคยตายตอนประกาศไปทีหลัง)
+-- ============================================
+-- แจ้งเตือนผู้ใช้
+-- ============================================
+-- ต้องอยู่ระดับ module ไม่ใช่ใน register เพราะ runRound จะเรียกใช้ด้วย
+--   local function ใน register มองจากข้างนอกไม่เห็น (upvalue ไม่หลุดออกมา)
+--   local function ใน register มองจากข้างนอกไม่เห็น (upvalue ไม่หลุดออกมา)
+local windUI = nil
+
+local function notify(title, desc)
+    if not windUI then return end
+    pcall(function()
+        windUI:Notify({Title = title, Content = desc, Duration = 3})
+    end)
+end
+
 -- ============================================
 -- Auto Rebirth
 -- ============================================
 -- เงื่อนไขเดียว: Lv. ถึงเกณฑ์ = ยิงทันที ไม่มีเงื่อนไขอื่นเลย
+--   เช็คทุกเฟรม ไม่ใช่ทุก 0.5 วิ เพื่อให้ยิงในเฟรมเดียวกับที่ Lv. เพิ่งข้ามเกณฑ์
 --
 --   เกณฑ์ = 25 * (rebirth + 1)  ตรงกับทุกแถวของ Config/Rebirth/Config.lua
 --     แถวแรก NeedLevel 0 แล้ว +25 ทีละแถว จนแถวสุดท้าย 1025
+--     ปุ่มของเกมเช็คแบบเดียวกันเป๊ะ: GetNeedLevel(rebirth + 1) <= level.Value
+--       (RebirthGUI.lua:52)  -> จุดที่เราอ่านมาคำนวณเงื่อนไขตรงกัน
 --   อ่านค่าจาก LocalPlayer.Eco.level / .rebirth ซึ่งเป็น NumberValue อ่านสดได้
---     (RebirthGUI.lua:35-37)
---   เพดาน = 41  เพราะ Helper.lua:3  u15 = getTableLegth(Config) - 1 = 42 - 1
+--     (RebirthGUI.lua:28-30  LocalPlayer:WaitForChild("Eco") -> rebirth / level)
+--   เพดาน = 41  เพราะ Helper.lua:3  u15 = getTableLegth(Config) - 1
+--     getTableLegth นับทุกคีย์รวม [0] ด้วย (TableUtils.lua:3-9) = 42 - 1
+--     และ CheckIsMax คือ a1 == u15 (Helper.lua:31-41) ไม่ใช่ >=
 --
--- ยิงผ่าน 2 ทาง
---   1) TryRebirthRE:FireServer() = ตัวเดียวกับที่ปุ่มของเกมยิง ไม่มีอาร์กิวเมนต์
---      (GuiUtils/RebirthGUI.lua:82-97)
---   2) UpdateAutoRebirthRE:FireServer(true) = สั่งเปิดรีเบิร์ธอัตโนมัติของเกมเอง
---      ให้เซิร์ฟเวอร์เป็นคนตัดสินใจรีเบิร์ทแทน ไม่ต้องพึ่งลูปข้างล่างเลย
+-- ยิงได้ 2 ทาง แล้วสลับไปมาทุกครั้งที่ต้องยิงซ้ำ
+--   1) TryRebirthRE:FireServer() = remote ตัวเดียวกับที่ปุ่มของเกมยิง ไม่มีอาร์กิวเมนต์
+--      (RebirthGUI.lua:27 ดึง remote, :53 ยิง ไม่มีอาร์กิวเมนต์ต่อเลย)
+--   2) กดปุ่ม Rebirth ของเกมเอง โดยเรียก callback ที่เกมต่อไว้กับ MouseButton1Click
+--      ปุ่มอยู่ที่ PlayerGui.Main.Rebirth.Main.Info.Bottom.Button.Rebirth.Button
+--        (ยืนยันจากดัมป์: TextButton ตัวนี้แหละที่ RebirthGUI.lua:46 ต่อสัญญาณไว้)
+--      ตัวนี้เช็ค CheckIsMax/NeedLevel ให้เองก่อนค่อยยิง = ทางที่ "เหมือนคนเล่นกดเอง" ที่สุด
+--      ใช้ตอนทางที่ 1 ไม่ออกผล (เช่น executor ไม่ยอมยิง remote ตรง ๆ)
+--   3) UpdateAutoRebirthRE:FireServer(true) = สั่งเปิดรีเบิร์ธอัตโนมัติของเซิร์ฟเวอร์
 --      Remote ตัวนี้มีอยู่จริงใน ReplicatedStorage.Remote.Rebirth
 --        แต่ค้นทั้งดัมป์แล้วไม่มีสคริปต์ฝั่ง client ไหนเรียกมันเลย
---        (ของเดิมอ้างถึงแค่ RebirthGUI.lua:27 ที่ TryRebirthRE)
---      ยิงครั้งเดียวตอนเปิดสวิตช์ ถ้ายิงซ้ำทุกรอบแล้วมันเป็น toggle จะสลับไปมาจนเปิด/ปิดเอง
+--      ยิงครั้งเดียวตลอดชีวิตสคริปต์ ถ้ายิงซ้ำทุกครั้งที่เปิดสวิตช์
+--        แล้วมันเป็น toggle = จะสลับไปมาจนเปิด/ปิดเอง (ของเดิมยิงซ้ำทุกครั้งที่กดสวิตช์)
 local MAX_REBIRTH = 41
 local NEED_LEVEL_STEP = 25
-local REBIRTH_EVERY = 0.5      -- รอบล่าสุดแล้วเช็ค Lv. ใหม่
+-- ถ้ายิงแล้ว Eco.rebirth ไม่ขยับ = ยังไม่ได้ ค่อยลองใหม่หลังจากนี้
+--   ระยะนี้ไม่ใช่จังหวะยิง แต่เป็น "รอเซิร์ฟเวอร์ตอบ" เพราะตอนยิงสำเร็จ
+--   Eco.rebirth จะเปลี่ยนทันที แล้วเงื่อนไขข้างบนจะพาไปยิงรอบใหม่เองทันที
+local REBIRTH_RETRY = 1.0
 
 local function canRebirth()
     local rebirth = getRebirth()
     local level = getLevel()
     if rebirth == nil or level == nil then return false end
     if rebirth >= MAX_REBIRTH then return false end
+    -- ตายอยู่ก็ยังยิงไม่ได้ ไม่งั้นจะได้ยิงเปล่า ๆ ทุกวินาทีตอนตาย
+    if player:GetAttribute("Dead") then return false end
     return level >= NEED_LEVEL_STEP * (rebirth + 1)
 end
 
+-- ทางที่ 1: ยิง remote ตรง ๆ
+local function fireTryRebirth()
+    local remote = TryRebirthRE or getRemote("Rebirth", "TryRebirthRE")
+    if not remote then return false end
+    TryRebirthRE = remote
+    return (pcall(function() remote:FireServer() end))
+end
+
+-- ทางที่ 2: เรียก callback ของปุ่มในเกม (ใช้ getTriggerHandlers ตัวเดียวกับตอนเก็บของ)
+--   เกมต่อ callback ไว้ตอนสตาร์ท ไม่ต้องเปิดหน้าจอรีเบิร์ธให้เห็นก็เรียกได้
+--   (RebirthGUI.lua:46  Button.Rebirth.Button.MouseButton1Click:Connect)
+local function clickGameRebirthButton()
+    local gui = player:FindFirstChild("PlayerGui")
+    local main = gui and gui:FindFirstChild("Main")
+    local screen = main and main:FindFirstChild("Rebirth")
+    local info = screen and screen:FindFirstChild("Main")
+        and screen.Main:FindFirstChild("Info")
+    local bottom = info and info:FindFirstChild("Bottom")
+    local holder = bottom and bottom:FindFirstChild("Button")
+    local btn = holder and holder:FindFirstChild("Rebirth")
+        and holder.Rebirth:FindFirstChild("Button")
+    if not btn or not btn:IsA("GuiButton") then return false end
+    local handlers = getTriggerHandlers(btn.MouseButton1Click)
+    if not handlers then return false end
+    for _, fn in ipairs(handlers) do
+        pcall(fn)
+    end
+    return true
+end
+
 -- เปิดระบบรีเบิร์ธอัตโนมัติของเกม ยิงครั้งเดียวพอ
+local autoRebirthSent = false
+
 local function enableGameAutoRebirth()
+    if autoRebirthSent then return end
+    autoRebirthSent = true
     local remote = UpdateAutoRebirthRE or getRemote("Rebirth", "UpdateAutoRebirthRE")
     if not remote then return end
     UpdateAutoRebirthRE = remote
@@ -939,20 +1005,49 @@ end
 
 local rebirthEnabled = false
 local rebirthRunning = false
+-- เลขรอบ กันลูปเก่าค้างอยู่ตอนเปิด-ปิด-เปิดรวด
+--   ถ้าใช้แค่ธง boolean ตอนกดปิดแล้วกดเปิดเร็ว ๆ ลูปเดิมจะเดินต่อเพราะเห็นธงเป็น true
+--   แล้วได้สองลูปยิงพร้อมกัน (หรือกดปิดครั้งเดียวแล้วไม่มีลูปวิ่งเลยตลอด)
+local rebirthToken = 0
+-- ค่า ณ เวลาที่ยิงครั้งล่าสุด ใช้บอกว่า "ยิงแล้วได้ผลไหม"
+local lastFireRebirth = nil
+local lastFireTime = 0
+-- เริ่มที่ 2 เพื่อให้การสลับข้างล่างพาไปทางที่ 1 (remote) ก่อน
+local fireMethod = 2
 
-local function rebirthLoop()
-    while rebirthEnabled do
+local function rebirthLoop(token)
+    local lastNotified = nil
+    while rebirthEnabled and token == rebirthToken do
+        local rebirth = getRebirth()
         if canRebirth() then
-            local remote = TryRebirthRE or getRemote("Rebirth", "TryRebirthRE")
-            if remote then
-                TryRebirthRE = remote
-                pcall(function() remote:FireServer() end)
+            local now = os.clock()
+            -- เงื่อนไขยังผ่าน แต่เพิ่งยิงไปแล้วและ Eco.rebirth ยังเท่าเดิม = ยังไม่ได้ผล รอก่อน
+            if lastFireRebirth ~= rebirth or (now - lastFireTime) >= REBIRTH_RETRY then
+                lastFireRebirth = rebirth
+                lastFireTime = now
+                fireMethod = 3 - fireMethod -- สลับ 1 <-> 2 ทุกครั้งที่ยิงซ้ำ
+                if fireMethod == 1 then
+                    if not fireTryRebirth() then clickGameRebirthButton() end
+                else
+                    if not clickGameRebirthButton() then fireTryRebirth() end
+                end
             end
+        else
+            -- เงื่อนไขไม่ผ่าน = รอบใหม่พร้อมยิงทันทีที่เลเวลข้ามเกณฑ์ (ไม่ต้องรอ cooldown ค้าง)
+            lastFireRebirth = nil
         end
-        task.wait(REBIRTH_EVERY)
+
+        -- แจ้งเฉพาะตอนที่ rebirth เพิ่งขึ้นจริง ไม่ยิงซ้ำทุกครั้งที่เลขเดิม
+        if rebirth ~= nil and lastNotified ~= nil and rebirth > lastNotified then
+            notify("Rebirth แล้ว", "Rebirth ครั้งที่ " .. tostring(rebirth))
+        end
+        if rebirth ~= nil then lastNotified = rebirth end
+
+        task.wait() -- ครั้งละเฟรม เพื่อให้ยิงทันทีที่เลเวลข้ามเกณฑ์
     end
-    -- คืนค่าให้แน่นอนเสมอ ไม่ว่าจะออกจากลูปด้วยเหตุใดก็ตาม
-    rebirthRunning = false
+    -- คืนค่าให้แน่นอนเสมอ แต่เฉพาะตอนที่ยังเป็นลูปตัวล่าสุดเท่านั้น
+    --   ไม่งั้นลูปเก่าที่ถูกตัดด้วย token จะไปลบธงของลูปใหม่ทั้งที่ยังวิ่งอยู่
+    if token == rebirthToken then rebirthRunning = false end
 end
 
 -- ============================================
@@ -974,35 +1069,6 @@ local function waitUntil(check, timeout, step)
     return false
 end
 
--- ============================================
--- จับเวลารอบฟาร์ม
--- ============================================
--- พิมพ์ค่าเฉลี่ยต่อช่วงลงคอนโซลของ executor (ไม่ขึ้นบน UI)
---   ตั้ง ROUND_LOG_EVERY = 0 ถ้าไม่อยากเห็น
--- จุดที่วัด = 5 ช่วงที่รอบหนึ่ง ๆ ใช้เวลา
---   เกิด / ฆ่า / รอของตก / เก็บของ / ออกจากสเตจ
--- ช่วงที่โตสุดคือช่วงที่แก้จากสคริปต์ไม่ได้ เพราะเป็นเวลารอเซิร์ฟเวอร์
-local ROUND_LOG_EVERY = 30
-local logDone = 0
-local logEnter = 0
-local logSpawn = 0
-local logKill = 0
-local logOre = 0
-local logPick = 0
-local logExit = 0
-
-local function logRound()
-    if ROUND_LOG_EVERY <= 0 then return end
-    logDone = logDone + 1
-    if logDone < ROUND_LOG_EVERY then return end
-    local n = ROUND_LOG_EVERY
-    local total = (logEnter + logSpawn + logKill + logOre + logPick + logExit) / n
-    print(string.format(
-        "[AutoFarm] %d รอบ %.2f วิ/รอบ | เข้าสเตจ %.2f | รอมอน %.2f | ฆ่า %.2f | รอของ %.2f | เก็บ %.2f | ออก %.2f",
-        n, total, logEnter / n, logSpawn / n, logKill / n, logOre / n, logPick / n, logExit / n))
-    logDone, logEnter, logSpawn, logKill, logOre, logPick, logExit = 0, 0, 0, 0, 0, 0, 0
-end
-
 -- หนึ่งรอบของการฟาร์ม คืนทุกทางที่ "รอบนี้ไม่สำเร็จ"
 -- แยกจาก farmLoop เพื่อใช้ return แทน continue (continue เป็นคีย์เวิร์ดเฉพาะ Luau)
 --
@@ -1016,20 +1082,6 @@ end
 --   4) ของ: HurtEnemy:308 เก็บ DeadCF = ตำแหน่งที่มอนตาย (จุดเกิดมอน)
 --           ของจึงตกที่นั่น ไม่ใช่ที่เรายืน
 -- ผลคือไม่ต้องเดินไปไหนเลย ทั้งรอบอยู่ที่เดิม ไม่มีจังหวะกระตุกจากการวาร์ป
--- ============================================
--- แจ้งเตือนผู้ใช้
--- ============================================
--- ต้องอยู่ระดับ module ไม่ใช่ใน register เพราะ runRound จะเรียกใช้ด้วย
---   local function ใน register มองจากข้างนอกไม่เห็น (upvalue ไม่หลุดออกมา)
-local windUI = nil
-
-local function notify(title, desc)
-    if not windUI then return end
-    pcall(function()
-        windUI:Notify({Title = title, Content = desc, Duration = 3})
-    end)
-end
-
 -- รอจนสถานะเปลี่ยนจริง แทนการนอนตายตัว
 --   ExitFight ตั้ง IntoFight = nil ให้เอง (StageUtils.lua:163) พอได้สัญญาณค่อยเข้าใหม่
 --   เดิมนอน 1.5 วิทุกรอบ = เสียเวลาเปล่าตอนที่จริง ๆ ใช้แค่ไม่กี่เฟรม
@@ -1091,15 +1143,12 @@ local function hideStageUI()
         end
     end
 
+    -- เอฟเฟคลู่เลือด HPBall: พอฆ่ามอนหมด เกมจะลูกเลือดลอยมาหาเรา 3 ลูก
+    --   และแต่ละลูกสร้าง RecoverVFX ติดตัวละครตอนมันถูกลบ (LocalVFXUtils.lua:30-34)
+    --   ลบตัว HPBall ตัวแรกออกก่อน = ไม่มีลูกไหล ไม่มี RecoverVFX ไม่มีเสียง HealHP
     local function killHpBallVfx()
-        for _, obj in ipairs(Workspace:GetDescendants()) do
-            if obj:IsA("Attachment") or obj:IsA("ParticleEmitter") or obj:IsA("Light") or obj:IsA("Beam") then
-                local par = obj.Parent
-                if par and par.Name == "HPBallVFX" then
-                    pcall(function() par:Destroy() end)
-                end
-            end
-            if obj.Name == "HPBallVFX" and obj:IsA("Model") then
+        for _, obj in ipairs(Workspace:GetChildren()) do
+            if obj.Name == "HPBall" and obj:IsA("Model") then
                 pcall(function() obj:Destroy() end)
             end
         end
@@ -1129,16 +1178,19 @@ local function hideStageUI()
         end
         setreadonly(mt, true)
     end
-
     hookTweens()
 
-    task.spawn(function()
-        while uiHidden do
-            killSpeedVfx()
-            killHpBallVfx()
-            task.wait(0.25)
+    -- ตัดต้นทาง: กันไม่ให้เกมโคลน HPBall จาก Assets
+    do
+        local assets = ReplicatedStorage:FindFirstChild("Assets")
+        local vfx = assets and assets:FindFirstChild("VFX")
+        if vfx then
+            local hp = vfx:FindFirstChild("HPBall")
+            if hp and hp.Parent then
+                pcall(function() hp.Parent = nil end)
+            end
         end
-    end)
+    end
 
     RunService:BindToRenderStep("SugarHideStageUI", 200, function()
         local char = player.Character
@@ -1199,23 +1251,6 @@ end
 -- รอบนี้จบเมื่อมอนหมดจากโฟลเดอร์ 2 เฟรมติด หรือมีของตกแล้ว
 --   ไม่ใช่ "รอของตก" ล้วน ๆ เพราะถ้าเซิร์ฟเวอร์ไม่ยอมให้ของ จะค้างจนหมดเวลาทุกรอบ
 -- ซากมอนที่ตายแล้วไม่ถูกนับ เพราะเกมหน่วงลบอีก 3 วินาที (ดูหัว countEnemies)
---
--- การวัดแยก 2 อย่าง เพราะที่ผ่านมาเวลาที่นับเป็น "ฆ่า" ไม่ได้เป็นการฆ่าจริง
---   เพราะ EnemyHitBE:Fire -> HurtEnemy -> CheckStageFinishedOnce -> FinishStage
---     แล้ว FinishStage ไปค้างที่ repeat task.wait() until FinishedOreTab
---       (StageUtils.lua:206-208)
---   BindableEvent:Fire ให้ coroutine เดียวกับผู้เรียก เวลาที่รอเซิร์ฟเวอร์
---     จึงถูกนับรวมอยู่ในช่วงนี้ ทำให้ดูเหมือนฆ่าเชื่องช้า
---   จึงแยกเป็น: เฟรมที่ใช้จนมอนหมด (ฆ่าจริง) vs เวลารวม (รวมรอเซิร์ฟเวอร์)
---   ตั้ง KILL_LOG_EVERY = 0 ถ้าไม่อยากเห็น
-local KILL_LOG_EVERY = 30
-local killLogRounds = 0
-local killLogFrames = 0
-local killLogKill = 0
-local killLogWait = 0
-local killLogAlive = 0
-local killLogTrace = ""
-
 local function killStageEnemies(limit)
     local mark = os.clock()
     local empty = 0
@@ -1235,25 +1270,6 @@ local function killStageEnemies(limit)
             if not deadAt then deadAt = {frame = frames, time = os.clock()} end
             empty = empty + 1
             if empty >= 2 or stageDone() then
-                if KILL_LOG_EVERY > 0 then
-                    killLogRounds = killLogRounds + 1
-                    killLogAlive = killLogAlive + startAlive
-                    if killLogRounds == KILL_LOG_EVERY then
-                        killLogTrace = trace
-                    end
-                    killLogFrames = killLogFrames + (deadAt and deadAt.frame or frames)
-                    killLogKill = killLogKill + (deadAt and (deadAt.time - mark) or 0)
-                    killLogWait = killLogWait + (os.clock() - (deadAt and deadAt.time or mark))
-                    if killLogRounds >= KILL_LOG_EVERY then
-                        local n = killLogRounds
-                        print(string.format(
-                            "[AutoFarm] %d รอบ: มอน %.1f ตัว | ฆ่าจริง %.0f เฟรม / %.3f วิ | รอหลังมอนตาย %.3f วิ | รูปทรง %s",
-                            n, killLogAlive / n, killLogFrames / n, killLogKill / n, killLogWait / n, killLogTrace))
-                        killLogTrace = ""
-                        killLogRounds, killLogAlive = 0, 0
-                        killLogFrames, killLogKill, killLogWait = 0, 0, 0
-                    end
-                end
                 return true
             end
         end
@@ -1290,9 +1306,7 @@ local function runRound()
     --    จับเวลาไว้ก่อน เพราะการตั้ง attribute เป็นตัวเรียก CreateStageEnemys
     --    และตัวนั้น yield หลายจุด (WaitForChild + HP bar 0.15 วิต่อมอน)
     --      (StageUtils.lua:263-268 -> EnemyCTRL._CreateBaseEnemy:192-260)
-    local tMark = os.clock()
     enterStage(selectedStage)
-    logEnter = logEnter + (os.clock() - tMark)
 
     -- 5) รอมอนเกิด (สูงสุด 10 วิ)
     --    ถ้าไม่มีมอนเกิด = สเตจนี้เล่นไม่ได้ เช่น ยังไม่ปลดล็อก
@@ -1304,9 +1318,6 @@ local function runRound()
         end
         return
     end
-
-    logSpawn = logSpawn + (os.clock() - tMark)
-    tMark = os.clock()
 
     -- 6) ฆ่ามอนทั้งเซตจนหมด
     --    ต้องยิงไปเรื่อย ๆ ไม่ใช่ยิงรอบเดียว เพราะ FinishStage
@@ -1325,13 +1336,9 @@ local function runRound()
     --     (StageUtils.lua:206-208  repeat task.wait() until FinishedOreTab
     --      StageUtils.lua:212      OreUtils.CreateOres)
     --   ถ้าไม่รอ จะไปเก็บตอนที่ยังไม่มีของเลย = เสียของทั้งรอบนั้น
-    logKill = logKill + (os.clock() - tMark)
-    tMark = os.clock()
 
     --    ของยังไม่ตกทันทีที่มอนตาย ต้องรอสัญญาณจาก FinishStage
     waitUntil(function() return stageDone() end, 3, 0.02)
-    logOre = logOre + (os.clock() - tMark)
-    tMark = os.clock()
 
     -- 7) เก็บของทุกชิ้นด้วยตัวเองก่อนเสมอ
     --    ของเข้ากระเป๋าทันทีที่กดปุ่ม Collect ไม่มีขั้นตอนยืนยันทีหลัง
@@ -1339,8 +1346,6 @@ local function runRound()
     --    และเก็บได้แค่ทีละจำนวนช่องที่อัป OrePack ไว้ ถ้าช่องเต็มเกมจะไม่เก็บให้
     --      (OreUtils.lua:60-62  if GetMaxNum("OrePack") <= v1 then showMessage("Pack is full.") return end)
     local picked = collectOres()
-    logPick = logPick + (os.clock() - tMark)
-    tMark = os.clock()
     if picked == 0 and collectWarnMsg and not collectWarned then
         notify("เก็บของไม่ได้", collectWarnMsg)
     end
@@ -1357,8 +1362,6 @@ local function runRound()
         exitFight(true, true)
         waitOutOfFight(10)
     end
-    logExit = logExit + (os.clock() - tMark)
-    logRound()
 end
 
 local function farmLoop()
@@ -1402,14 +1405,27 @@ local function setTrain(value)
 end
 
 -- เปิด/ปิด Auto Rebirth
+-- ใช้ rebirthToken เป็นตัวระบุรอบ ไม่ใช้แค่ธงว่า "กำลังวิ่งอยู่"
+--   เพราะตอนกดปิด ลูปยังค้างอยู่ใน task.wait() อีกไม่กี่เฟรม (ของเดิมรอ 0.5 วิ)
+--     ถ้าในเวลานั้นกดเปิดอีกครั้ง ของเดิมจะเห็น rebirthEnabled = true แล้วเดินต่อ
+--     ได้สองลูปยิงซ้อนกัน และลูปที่ตายทีหลังจะไปลบธงของลูปที่ยังวิ่งอยู่
+--   การบัมป์ token ทำให้ลูปเก่าหยุดที่เงื่อนไขรอบถัดไป โดยไม่ต้องรอมันจบ
 local function setRebirth(value)
-    rebirthEnabled = value == true
-    if rebirthEnabled and not rebirthRunning then
-        -- ให้เซิร์ฟเวอร์รีเบิร์ธเองก่อนเลย
-        --   ถ้าตัวนี้ใช้ได้ ลูปข้างล่างจะไม่ต้องทำอะไรเลยก็รีเบิร์ทได้เอง
-        enableGameAutoRebirth()
+    if value == true then
+        if rebirthRunning then return end
+        rebirthToken = rebirthToken + 1
+        rebirthEnabled = true
         rebirthRunning = true
-        task.spawn(rebirthLoop)
+        -- ล้างสถานะยิงครั้งก่อน ไม่งั้นเปิดใหม่จะต้องรอ cooldown ค้างจากรอบเก่า
+        lastFireRebirth = nil
+        lastFireTime = 0
+        -- ให้เซิร์ฟเวอร์รีเบิร์ธเองด้วย (ยิงครั้งเดียวตลอดชีวิตสคริปต์)
+        enableGameAutoRebirth()
+        task.spawn(rebirthLoop, rebirthToken)
+    else
+        rebirthToken = rebirthToken + 1
+        rebirthEnabled = false
+        rebirthRunning = false
     end
 end
 
