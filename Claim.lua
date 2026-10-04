@@ -1,4 +1,4 @@
--- Version 1.40
+-- Version 9.01
 -- แถบรับของ (รับรางวัลที่เกมแจกให้อัตโนมัติทุกอย่าง)
 --
 -- 4 ที่มีให้รับ และแต่ละที่ใช้ remote กับเงื่อนไขต่างกัน:
@@ -47,10 +47,17 @@ local function getRemote(folderName, remoteName)
     return folder:FindFirstChild(remoteName)
 end
 
+-- เก็บ instance ที่เคยหาเจอไว้ ไม่ต้อง find ทุกครั้ง (ถ้าเกมยังไม่โหลด remote จะหาใหม่ในลูป)
+local TryClaimUPDRewardRE = getRemote("UpdateLog", "TryClaimUPDRewardRE")
+local TryClaimOnlineRE = getRemote("Online", "TryClaimRE")
+local TryClaimIndexExpRF = getRemote("Index", "TryClaimIndexExpRF")
+local TryClaimLevelRewardRF = getRemote("Index", "TryClaimLevelRewardRF")
+local TryClaimOfflineRewardRE = getRemote("Offline", "TryClaimOfflineRewardRE")
 local TryClaimSeasonAllRE = getRemote("Season", "TryClaimAllRewardRE")
 local TryClaimSeasonDailyRE = getRemote("Season", "TryClaimDailyTicRE")
 local TryClaimEnhantQuestRE = getRemote("EnhantEvent", "TryClaimQuestRE")
 local TryClaimDungeonDailyRE = getRemote("Dungeon", "TryClaimDailyDunTicRE")
+local TryClaimWorldBossRE = getRemote("WorldBoss", "TryClaimBossRewardRE")
 
 -- ============================================
 -- ตารางตัวเลขที่ต้องคัดมาเอง (require ไม่ได้)
@@ -278,37 +285,6 @@ local function claimOffline()
 end
 
 -- ============================================
--- ลูปหลัก
--- ============================================
-local CLAIM_EVERY = 3
-
-local claimEnabled = false
-local claimRunning = false
-
-local function claimOnce()
-    -- อัปเดตข้อมูลก่อนทุกรอบ เพราะทุกอย่างตัดสินจาก store
-    --   เคยรับแล้วหรือยัง / EXP ถึงเกณฑ์หรือยัง  ถ้าใช้ค่าค้างจะยิงซ้ำทุกรอบ
-    if not refresh() then return false end
-
-    -- เรียงตามที่ผู้ใช้บอก: Index ต้องรับ EXP ให้หมดก่อนค่อยรับรางวัลระดับ
-    local gotIndexExp = claimIndexExp()
-    local gotLevel = claimIndexLevel()
-    if gotLevel then
-        -- รางวัลระดับทำให้ EXP เพิ่ม รอข้อมูลใหม่ก่อนไปรับระดับถัดไปในรอบหน้า
-        refresh()
-    end
-
-    claimUpdateLog()
-    claimOnline()
-    claimOffline()
-    claimSeason()
-    claimEnhantEvent()
-    claimDungeon()
-
-    return gotIndexExp > 0 or gotLevel
-end
-
--- ============================================
 -- 5) Season Pass
 -- ============================================
 -- รางวัลซีซั่นอยู่ใต้ store "Season" แล้วซ้อนตามชื่อซีซั่นที่กำลังเล่น
@@ -319,25 +295,49 @@ end
 -- ปุ่มใน UI ของเกมยิงตัวรวมที่ไม่ต้องใส่อาร์กิวเมนต์เลย
 --   SeasonData.ClaimAll() -> TryClaimAllRewardRE:FireServer()   (SeasonGUI.lua:181-186)
 --   เซิร์ฟเวอร์เป็นคนไล่เช็คเองว่าเลเวลไหนถึงเกณฑ์และยังไม่ได้รับ
---   เรายิงซ้ำทุกรอบได้ เพราะของที่รับแล้วมันไม่มีอีก
+--
+-- สำคัญ: เกมเช็คก่อนยิงเสมอ  IsRewardLock(k, "Free") or IsRewardClaimed(k, "Free")  (SeasonGUI.lua:182)
+--   ถ้ายิงทุกรอบโดยไม่เช็ค ฟังก์ชันนี้จะคืน true เสมอ ไม่มีวันจบ
+--   แล้วไปบล็อกส่วนที่อยู่ถัดไปใน claimOthers() ทิ้งทั้งชุด
+--   เลยต้องเช็ค store ก่อนว่ามีเลเวลไหนที่ปลดล็อกแล้วแต่ยังไม่ได้รับจริง ๆ
 local function claimSeason()
     local got = false
 
-    local remoteAll = TryClaimSeasonAllRE or getRemote("Season", "TryClaimAllRewardRE")
-    if remoteAll then
-        TryClaimSeasonAllRE = remoteAll
-        if pcall(function() remoteAll:FireServer() end) then
-            got = true
-            task.wait(CLAIM_GAP)
+    local season = store("Season")
+    local seasonKey = workspace:GetAttribute("Season")
+    local today = workspace:GetAttribute("today")
+    local seasonData = season and seasonKey and season[seasonKey]
+
+    -- รางวัลระดับ: ไล่เลเวลที่ถึงแล้ว ดูว่ามีสักเลเวลที่ยังไม่ได้รับฝั่งฟรีไหม
+    --   ปุ่มรับที่เหลือคือ VIP ซึ่งปลดล็อกเป็นเรื่องของเกม ยิงตัวรวมครอบอยู่แล้ว
+    local levelPending = false
+    if seasonData then
+        local level = tonumber(seasonData.Level) or 0
+        local claimedFree = type(seasonData.Claimed) == "table"
+            and type(seasonData.Claimed.Free) == "table" and seasonData.Claimed.Free or {}
+        for lv = 1, level do
+            -- key ของ Claimed เป็น string เพราะมาจาก key ของ Config (Config/Season/RewardConfig/Free.lua)
+            --   เผื่อข้อมูลเป็นเลข ก็เช็คทั้งสองแบบ
+            if not (claimedFree[tostring(lv)] or claimedFree[lv]) then
+                levelPending = true
+                break
+            end
+        end
+    end
+
+    if levelPending then
+        local remoteAll = TryClaimSeasonAllRE or getRemote("Season", "TryClaimAllRewardRE")
+        if remoteAll then
+            TryClaimSeasonAllRE = remoteAll
+            if pcall(function() remoteAll:FireServer() end) then
+                got = true
+                task.wait(CLAIM_GAP)
+            end
         end
     end
 
     -- ของรายวันของซีซั่น จุดขายคือ DailyGet ที่ผูกกับวันของ workspace
     --   (SeasonData.lua:60-66  Season[key].DailyGet[workspace:GetAttribute("today")])
-    local season = store("Season")
-    local seasonKey = workspace:GetAttribute("Season")
-    local today = workspace:GetAttribute("today")
-    local seasonData = season and seasonKey and season[seasonKey]
     if seasonData and today and type(seasonData.DailyGet) == "table"
         and not seasonData.DailyGet[today] then
         local remoteDaily = TryClaimSeasonDailyRE or getRemote("Season", "TryClaimDailyTicRE")
@@ -346,6 +346,7 @@ local function claimSeason()
             if pcall(function() remoteDaily:FireServer() end) then
                 seasonData.DailyGet[today] = true
                 got = true
+                task.wait(CLAIM_GAP)
             end
         end
     end
@@ -359,43 +360,55 @@ end
 -- เควสต์อยู่ใต้ store "EnhantEvent"
 --   record[ชนิดงาน] = จำนวนที่ทำไปแล้ว   claimed[เลขเควสต์] = true เมื่อรับแล้ว
 --   (EnhantEventData.lua:29-42)
--- ปุ่ม "Yes" ในเกมยิง TryClaimQuestRE:FireServer(เลขเควสต์)  เลขเควสต์เป็น string "1".."15"
+-- ปุ่ม "Yes" ในเกมยิง TryClaimQuestRE:FireServer(เลขเควสต์)  เลขเควสต์เป็น string "1".."14"
 --   (EnhantEventGUI.lua:84-86  ค่า k มาจาก key ของ Config)
--- ปุ่มยิงได้เลยไม่ต้องเสียอะไร เราจึงอ่านจาก store ตรง ๆ ไม่ต้องไล่เฟรมในหน้าต่าง
+--
+-- มีสองเส้นทาง ตัวหลังคือตัวสำรับ เพราะเส้นทางหลักใช้คำตัดสินของเกมเอง
 local QUEST_KEYS = {
-    "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15",
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14",
 }
 
 -- Config/Enhant/EventHelper/Quest.lua -> งานที่แต่ละเควสต์ต้องทำให้ครบ
 --   คัดมาเฉพาะตัวเลขที่ต้องใช้ เพื่อตัดสินว่าเควสต์นั้นทำครบหรือยัง
 --   (EventHelper.GetNeedType / GetNeedNumber)
+--   ตารางนี้ต้องตรงกับไฟล์ Config เป๊ะ ๆ ถ้าเลขต่ำกว่าของจริง
+--   เราจะยิงก่อนครบ เซิร์ฟเวอร์ก็จะปฏิเสธแล้วไม่ให้ของ
 local QUEST_NEED = {
     ["1"] = {"Enhant", 5}, ["2"] = {"Enhant", 10}, ["3"] = {"Enhant", 20},
-    ["4"] = {"Enhant", 30}, ["5"] = {"Enhant", 40}, ["6"] = {"Enhant", 50},
-    ["7"] = {"Forge_Armor", 10}, ["8"] = {"Forge_Armor", 20}, ["9"] = {"Forge_Armor", 30},
-    ["10"] = {"Forge_Armor", 40}, ["11"] = {"Forge_Weapon", 10}, ["12"] = {"Forge_Weapon", 20},
-    ["13"] = {"Forge_Weapon", 30}, ["14"] = {"Forge_Weapon", 40}, ["15"] = {"Forge_Weapon", 50},
+    ["4"] = {"Enhant", 30}, ["5"] = {"Enhant", 50}, ["6"] = {"Enhant", 100},
+    ["7"] = {"Forge_Armor", 10}, ["8"] = {"Forge_Armor", 20}, ["9"] = {"Forge_Armor", 50},
+    ["10"] = {"Forge_Armor", 100},
+    ["11"] = {"Forge_Weapon", 10}, ["12"] = {"Forge_Weapon", 20}, ["13"] = {"Forge_Weapon", 50},
+    ["14"] = {"Forge_Weapon", 100},
 }
 
-local function claimEnhantEvent()
-    local event = store("EnhantEvent")
-    if not event then return false end
-    local record = type(event.record) == "table" and event.record or {}
-    local claimed = type(event.claimed) == "table" and event.claimed or {}
+-- เส้นทางหลัก: ดูว่าปุ่ม "Yes" ในหน้าต่างของเกมเปิดอยู่ไหม
+--   ปุ่มนี้ถูกเกมตั้งค่าให้เห็นเฉพาะเควสต์ที่ทำครบและยังไม่ได้รับ
+--   Yes.Visible = not claimed and NeedNumber <= record
+--   (EnhantEventGUI.lua:125-133 ใน update())
+--   เฟรมถูกสร้างตั้งแต่ตอนโหลดเกม ไม่ต้องเปิดหน้าต่างก่อนก็มี
+--   (ClientManager.client.lua:47-57  spawn start() ของทุกโมดูลใน GuiUtils)
+--   ข้อดีคือไม่ต้องพึ่งตาราง QUEST_NEED เลย เกมเป็นคนบอกว่าเควสต์ไหนรับได้แล้ว
+local function claimEnhantEventFromGui()
+    local scroll = findGui("Main", "EnhantEvent", "Main", "Info", "ScrollingFrame")
+    if not scroll then return 0 end
 
     local remote = TryClaimEnhantQuestRE or getRemote("EnhantEvent", "TryClaimQuestRE")
-    if not remote then return false end
+    if not remote then return 0 end
     TryClaimEnhantQuestRE = remote
 
+    local event = store("EnhantEvent")
+    local claimed = event and type(event.claimed) == "table" and event.claimed or {}
+
     local got = 0
-    for _, key in ipairs(QUEST_KEYS) do
-        local need = QUEST_NEED[key]
-        -- ไม่มีในตาราง = เกมเพิ่มเควสต์ใหม่ ยังไม่รู้เงื่อนไข ข้ามไปก่อนไม่ยิงพลาด
-        if need and not claimed[key] then
-            local done = tonumber(record[need[1]]) or 0
-            if done >= need[2] then
-                if pcall(function() remote:FireServer(key) end) then
-                    claimed[key] = true
+    for _, frame in ipairs(scroll:GetChildren()) do
+        if frame:IsA("Frame") then
+            local right = frame:FindFirstChild("Frame") and frame.Frame:FindFirstChild("Right")
+            local buttons = right and right:FindFirstChild("Buttons")
+            local yes = buttons and buttons:FindFirstChild("Yes")
+            if yes and yes.Visible and not claimed[frame.Name] then
+                if pcall(function() remote:FireServer(frame.Name) end) then
+                    claimed[frame.Name] = true
                     got = got + 1
                     task.wait(CLAIM_GAP)
                 end
@@ -403,6 +416,41 @@ local function claimEnhantEvent()
         end
     end
     return got
+end
+
+-- เส้นทางสำรอง: ถ้าหน้าต่างยังไม่ถูกสร้าง (เกมโหลดช้า) ให้ตัดสินจาก store แทน
+--   ใช้ตาราง QUEST_NEED ที่คัดมาจาก Config ของเกม
+local function claimEnhantEventFromStore()
+    local event = store("EnhantEvent")
+    if not event then return 0 end
+    local record = type(event.record) == "table" and event.record or {}
+    local claimed = type(event.claimed) == "table" and event.claimed or {}
+
+    local remote = TryClaimEnhantQuestRE or getRemote("EnhantEvent", "TryClaimQuestRE")
+    if not remote then return 0 end
+    TryClaimEnhantQuestRE = remote
+
+    local got = 0
+    for _, key in ipairs(QUEST_KEYS) do
+        local need = QUEST_NEED[key]
+        if need and not claimed[key] and (tonumber(record[need[1]]) or 0) >= need[2] then
+            if pcall(function() remote:FireServer(key) end) then
+                claimed[key] = true
+                got = got + 1
+                task.wait(CLAIM_GAP)
+            end
+        end
+    end
+    return got
+end
+
+local function claimEnhantEvent()
+    if not refresh() then return false end
+
+    -- ทั้งสองเส้นทางใช้ตาราง claimed ชุดเดียวกัน
+    --   ถ้าเส้นทางหน้าต่างรับไปแล้ว เส้นทาง store จะข้ามเควสต์นั้นในรอบเดียวกัน
+    local got = claimEnhantEventFromGui() + claimEnhantEventFromStore()
+    return got > 0
 end
 
 -- ============================================
@@ -431,6 +479,98 @@ local function claimDungeon()
     end
     return false
 end
+
+-- ============================================
+-- 8) WorldBoss
+-- ============================================
+local WB_SLOTS = {"1", "2", "3", "4", "5", "6", "7", "8"}
+
+local function claimWorldBoss()
+    local got = 0
+    local remote = TryClaimWorldBossRE or getRemote("WorldBoss", "TryClaimBossRewardRE")
+    if not remote then return false end
+    TryClaimWorldBossRE = remote
+
+    local gui = player:FindFirstChild("PlayerGui")
+    local bossFight = gui and gui:FindFirstChild("BossFight")
+    local bossReward = bossFight and bossFight:FindFirstChild("BossReward")
+    local cards = bossReward and bossReward:FindFirstChild("Cards")
+    if not cards then return false end
+
+    for _, slot in ipairs(WB_SLOTS) do
+        local card = cards:FindFirstChild(slot)
+        if card then
+            local reward = card:FindFirstChild("Reward")
+            if reward and reward.Visible then
+                pcall(function() remote:FireServer(slot) end)
+                got = got + 1
+                task.wait(CLAIM_GAP)
+            end
+        end
+    end
+    return got > 0
+end
+-- ============================================
+-- ลูปหลัก
+-- ============================================
+local CLAIM_EVERY = 3
+
+local claimEnabled = false
+local claimRunning = false
+
+-- จำนวนรอบสูงสุดที่ยอมวนต่อในรอบเดียว  กันค้างถ้าข้อมูลไม่เปลี่ยน
+local MAX_INDEX_ROUNDS = 16
+local MAX_OTHER_ROUNDS = 3
+
+-- อย่างอื่นที่ไม่เกี่ยวกับลำดับกัน รับทีเดียวจบ
+--
+-- ต้องเรียกทุกอันให้ครบ ใช้ or ที่จบสั้นไม่ได้
+--   เพราะมันจะหยุดที่อันแรกที่คืน true แล้วไม่ไปเรียกอันที่เหลือ
+--   ตัวที่ทำให้พังคือ Season ที่ยิงตัวรวมทุกรอบแล้วคืน true เสมอ
+--   ผลคือ Enhancement Event / Dungeon / WorldBoss ไม่เคยถูกเรียกเลย
+local function claimOthers()
+    local got = false
+    if claimUpdateLog() > 0 then got = true end
+    if claimOnline() > 0 then got = true end
+    if claimOffline() then got = true end
+    if claimSeason() then got = true end
+    if claimEnhantEvent() then got = true end
+    if claimDungeon() then got = true end
+    if claimWorldBoss() then got = true end
+    return got
+end
+
+local function claimOnce()
+    -- อัปเดตข้อมูลก่อนทุกรอบ เพราะทุกอย่างตัดสินจาก store
+    --   เคยรับแล้วหรือยัง / EXP ถึงเกณฑ์หรือยัง  ถ้าใช้ค่าค้างจะยิงซ้ำทุกรอบ
+    if not refresh() then return false end
+
+    local got = false
+
+    -- เรียงตามที่ผู้ใช้บอก: Index ต้องรับ EXP ให้หมดก่อนค่อยรับรางวัลระดับ
+    --   พอรับรางวัลเลเวลแล้ว EXP อาจถึงเกณฑ์เลเวลถัดไปทันทีในข้อมูลชุดเดียวกัน
+    --   วนซ้ำให้จนกว่าจะไม่มีอะไรให้รับอีก ไม่ต้องรอไปรอบหน้า
+    for _ = 1, MAX_INDEX_ROUNDS do
+        local step = false
+        if claimIndexExp() > 0 then step = true end
+        refresh()
+        if claimIndexLevel() then step = true end
+        if not step then break end
+        got = true
+        refresh()
+    end
+
+    -- อย่างอื่น: ถ้าการรับของฝั่งหนึ่งปลดล็อกของอีกฝั่ง ให้ไล่รับต่อในรอบเดียวกันเลย
+    --   เช่น รับ EXP ใน Index แล้วเลเวล Index ขึ้น ของซีซั่น/ส่งออนไลน์ก็เปิดพร้อมกัน
+    for _ = 1, MAX_OTHER_ROUNDS do
+        if not claimOthers() then break end
+        got = true
+        refresh()
+    end
+
+    return got
+end
+
 
 local function claimLoop()
     while claimEnabled do
@@ -469,7 +609,7 @@ function Claim.register(context)
     section:Toggle({
         Title = "เริ่ม Auto รับของ",
         Desc = "รับให้หมดทั้ง Update Log, ของออนไลน์, Index (EXP + เลเวล), Season Pass, "
-            .. "Enhancement Event, Frostbound Tower Daily",
+            .. "Enhancement Event, Frostbound Tower Daily, WorldBoss",
         Value = false,
         Callback = setClaim,
     })
