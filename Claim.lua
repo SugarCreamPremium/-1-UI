@@ -1,4 +1,4 @@
--- Version 1.06
+-- Version 1.40
 -- แถบรับของ (รับรางวัลที่เกมแจกให้อัตโนมัติทุกอย่าง)
 --
 -- 4 ที่มีให้รับ และแต่ละที่ใช้ remote กับเงื่อนไขต่างกัน:
@@ -47,11 +47,10 @@ local function getRemote(folderName, remoteName)
     return folder:FindFirstChild(remoteName)
 end
 
-local TryClaimUPDRewardRE = getRemote("UpdateLog", "TryClaimUPDRewardRE")
-local TryClaimOnlineRE = getRemote("Online", "TryClaimRE")
-local TryClaimIndexExpRF = getRemote("Index", "TryClaimIndexExpRF")
-local TryClaimLevelRewardRF = getRemote("Index", "TryClaimLevelRewardRF")
-local TryClaimOfflineRewardRE = getRemote("Offline", "TryClaimOfflineRewardRE")
+local TryClaimSeasonAllRE = getRemote("Season", "TryClaimAllRewardRE")
+local TryClaimSeasonDailyRE = getRemote("Season", "TryClaimDailyTicRE")
+local TryClaimEnhantQuestRE = getRemote("EnhantEvent", "TryClaimQuestRE")
+local TryClaimDungeonDailyRE = getRemote("Dungeon", "TryClaimDailyDunTicRE")
 
 -- ============================================
 -- ตารางตัวเลขที่ต้องคัดมาเอง (require ไม่ได้)
@@ -302,8 +301,135 @@ local function claimOnce()
     claimUpdateLog()
     claimOnline()
     claimOffline()
+    claimSeason()
+    claimEnhantEvent()
+    claimDungeon()
 
     return gotIndexExp > 0 or gotLevel
+end
+
+-- ============================================
+-- 5) Season Pass
+-- ============================================
+-- รางวัลซีซั่นอยู่ใต้ store "Season" แล้วซ้อนตามชื่อซีซั่นที่กำลังเล่น
+--   workspace:GetAttribute("Season") คือ key ของซีซั่นปัจจุบัน (SeasonData.lua:10)
+--   โครงสร้าง: Season[key].Claimed["Free"|"VIP"][เลเวล] และ Season[key].Level คือเลเวลซีซั่น
+--   (SeasonData.lua:84-98  IsRewardLock / IsRewardClaimed)
+--
+-- ปุ่มใน UI ของเกมยิงตัวรวมที่ไม่ต้องใส่อาร์กิวเมนต์เลย
+--   SeasonData.ClaimAll() -> TryClaimAllRewardRE:FireServer()   (SeasonGUI.lua:181-186)
+--   เซิร์ฟเวอร์เป็นคนไล่เช็คเองว่าเลเวลไหนถึงเกณฑ์และยังไม่ได้รับ
+--   เรายิงซ้ำทุกรอบได้ เพราะของที่รับแล้วมันไม่มีอีก
+local function claimSeason()
+    local got = false
+
+    local remoteAll = TryClaimSeasonAllRE or getRemote("Season", "TryClaimAllRewardRE")
+    if remoteAll then
+        TryClaimSeasonAllRE = remoteAll
+        if pcall(function() remoteAll:FireServer() end) then
+            got = true
+            task.wait(CLAIM_GAP)
+        end
+    end
+
+    -- ของรายวันของซีซั่น จุดขายคือ DailyGet ที่ผูกกับวันของ workspace
+    --   (SeasonData.lua:60-66  Season[key].DailyGet[workspace:GetAttribute("today")])
+    local season = store("Season")
+    local seasonKey = workspace:GetAttribute("Season")
+    local today = workspace:GetAttribute("today")
+    local seasonData = season and seasonKey and season[seasonKey]
+    if seasonData and today and type(seasonData.DailyGet) == "table"
+        and not seasonData.DailyGet[today] then
+        local remoteDaily = TryClaimSeasonDailyRE or getRemote("Season", "TryClaimDailyTicRE")
+        if remoteDaily then
+            TryClaimSeasonDailyRE = remoteDaily
+            if pcall(function() remoteDaily:FireServer() end) then
+                seasonData.DailyGet[today] = true
+                got = true
+            end
+        end
+    end
+
+    return got
+end
+
+-- ============================================
+-- 6) Enhancement Event (Quest)
+-- ============================================
+-- เควสต์อยู่ใต้ store "EnhantEvent"
+--   record[ชนิดงาน] = จำนวนที่ทำไปแล้ว   claimed[เลขเควสต์] = true เมื่อรับแล้ว
+--   (EnhantEventData.lua:29-42)
+-- ปุ่ม "Yes" ในเกมยิง TryClaimQuestRE:FireServer(เลขเควสต์)  เลขเควสต์เป็น string "1".."15"
+--   (EnhantEventGUI.lua:84-86  ค่า k มาจาก key ของ Config)
+-- ปุ่มยิงได้เลยไม่ต้องเสียอะไร เราจึงอ่านจาก store ตรง ๆ ไม่ต้องไล่เฟรมในหน้าต่าง
+local QUEST_KEYS = {
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15",
+}
+
+-- Config/Enhant/EventHelper/Quest.lua -> งานที่แต่ละเควสต์ต้องทำให้ครบ
+--   คัดมาเฉพาะตัวเลขที่ต้องใช้ เพื่อตัดสินว่าเควสต์นั้นทำครบหรือยัง
+--   (EventHelper.GetNeedType / GetNeedNumber)
+local QUEST_NEED = {
+    ["1"] = {"Enhant", 5}, ["2"] = {"Enhant", 10}, ["3"] = {"Enhant", 20},
+    ["4"] = {"Enhant", 30}, ["5"] = {"Enhant", 40}, ["6"] = {"Enhant", 50},
+    ["7"] = {"Forge_Armor", 10}, ["8"] = {"Forge_Armor", 20}, ["9"] = {"Forge_Armor", 30},
+    ["10"] = {"Forge_Armor", 40}, ["11"] = {"Forge_Weapon", 10}, ["12"] = {"Forge_Weapon", 20},
+    ["13"] = {"Forge_Weapon", 30}, ["14"] = {"Forge_Weapon", 40}, ["15"] = {"Forge_Weapon", 50},
+}
+
+local function claimEnhantEvent()
+    local event = store("EnhantEvent")
+    if not event then return false end
+    local record = type(event.record) == "table" and event.record or {}
+    local claimed = type(event.claimed) == "table" and event.claimed or {}
+
+    local remote = TryClaimEnhantQuestRE or getRemote("EnhantEvent", "TryClaimQuestRE")
+    if not remote then return false end
+    TryClaimEnhantQuestRE = remote
+
+    local got = 0
+    for _, key in ipairs(QUEST_KEYS) do
+        local need = QUEST_NEED[key]
+        -- ไม่มีในตาราง = เกมเพิ่มเควสต์ใหม่ ยังไม่รู้เงื่อนไข ข้ามไปก่อนไม่ยิงพลาด
+        if need and not claimed[key] then
+            local done = tonumber(record[need[1]]) or 0
+            if done >= need[2] then
+                if pcall(function() remote:FireServer(key) end) then
+                    claimed[key] = true
+                    got = got + 1
+                    task.wait(CLAIM_GAP)
+                end
+            end
+        end
+    end
+    return got
+end
+
+-- ============================================
+-- 7) Dungeon / Frostbound Tower (Daily)
+-- ============================================
+-- ของรายวันของ Frostbound Tower ไม่ต้องเข้าไปเล่นก่อน แต่ยังยิงทุกวันได้
+--   จุดขายคือ store.Dungeon.DailyGet[workspace:GetAttribute("today")]
+--   (DungeonData.lua:64-74)
+local function claimDungeon()
+    local dungeon = store("Dungeon")
+    local today = workspace:GetAttribute("today")
+    if dungeon and today and type(dungeon.DailyGet) == "table"
+        and dungeon.DailyGet[today] then
+        return false
+    end
+
+    local remote = TryClaimDungeonDailyRE or getRemote("Dungeon", "TryClaimDailyDunTicRE")
+    if not remote then return false end
+    TryClaimDungeonDailyRE = remote
+
+    if pcall(function() remote:FireServer() end) then
+        if dungeon and today and type(dungeon.DailyGet) == "table" then
+            dungeon.DailyGet[today] = true
+        end
+        return true
+    end
+    return false
 end
 
 local function claimLoop()
@@ -342,8 +468,8 @@ function Claim.register(context)
 
     section:Toggle({
         Title = "เริ่ม Auto รับของ",
-        Desc = "รับให้หมดทั้ง Update Log, ของออนไลน์, EXP ของ Index "
-            .. "และรางวัลระดับ คือรับทั้งหมดนั่นแหละ",
+        Desc = "รับให้หมดทั้ง Update Log, ของออนไลน์, Index (EXP + เลเวล), Season Pass, "
+            .. "Enhancement Event, Frostbound Tower Daily",
         Value = false,
         Callback = setClaim,
     })
