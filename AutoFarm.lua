@@ -1,4 +1,4 @@
--- Version 7.56
+-- Version 8.04
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -1038,95 +1038,51 @@ local function waitOutOfFight(timeout)
 end
 
 -- ============================================
--- กันจอซูมตอนเข้า-จบสเตจ
+-- ซ่อน UI ของสเตจ (หลัดเลือดมอน / ปุ่ม Back / หลัดเลือดบอส)
 -- ============================================
--- ตอนสเตจจบ เกมยิง tween ซูมเข้า 95 แล้ว 2.5 วิหลังซูมกลับมา 70
---   (StageUtils.lua:213-218)
---     CharUtils.SetWalkSpeedPercent(Character, 1.5, 100, "StageFinished")
---     CameraUtils.TWFOV(TweenInfo.new(0.25), 95)
---     task.delay(2.5, function() ... CameraUtils.TWFOV(TweenInfo.new(0.5), 70) end)
---   ตัว tween คือ TweenService:Create(camera, {FieldOfView = v}):Play()
---     (CameraUtils.lua:36-38)
---   ค่าปกติ = 70 (CameraUtils.lua:41  ResetFOV ตั้งกลับเป็น 70)
+-- ทำไมซ่อนแทนที่จะแก้ที่กล้อง
+--   ก่อนหน้านี้ใช้ hook TweenService บล็อก tween ที่แตะ FieldOfView
+--     (CameraUtils.lua:37 / CameraService.lua:569)
+--   แต่จุดที่สั่งซูมจริง ๆ คือ FinishStage ซึ่งทำ 3 อย่างพร้อมกัน
+--     (StageUtils.lua:213-221)
+--       1) CharUtils.SetWalkSpeedPercent(..., 1.5, ...)
+--       2) CameraUtils.TWFOV(TweenInfo.new(0.25), 95)
+--       3) task.delay(2.5) -> TWFOV(TweenInfo.new(0.5), 70)
+--   แก้แค่ข้อ 2 แล้วจอก็ยังรู้สึก "แปลก" จากความเร็วเดินที่เพิ่มขึ้น
+--   ซ่อน UI ตรงที่ผู้ใช้สังเกตเห็นชัดกว่า และไม่ไปยุ่งกล้องเลย
 --
--- แก้ 2 ชั้น เพราะชั้นเดียวเอาไม่อยู่
---   ชั้นหลัก = hook TweenService:Create ไม่ให้ tween ที่แตะ FOV ถูกสร้าง
---   ชั้นสำรอง = เขียน 70 ทับทุกเฟรม สำหรับการเขียนค่าตรง ๆ ที่ hook ไม่ครอบ
-local DEFAULT_FOV = 70
-local fovLocked = false
-
--- ---------- ทางหลัก: ไม่ให้ tween ที่แตะ FOV ถูกสร้างขึ้นมาเลย ----------
+-- ปุ่ม Back = PlayerGui.Hud.Top.Return
+--   เกมสั่งเปิดที่ StageUtils.StartFight (TopGUI.OpenReturnButton -> Return.Visible = true)
+--   และสั่งปิดที่ ExitFight (TopGUI.CloseReturnButton)
+--     (TopGUI.lua:23, 54-59)
+--   เราเข้าสเตจด้วยการตั้ง attribute StageID เหมือนเกม ปุ่มจึงเปิดตามปกติ
+--   แก้โดยบังคับ Visible = false ทุกเฟรม
+--     (ถ้าปุ่มหายไปจะกดออกจากสเตจไม่ได้ แต่เราออกเองอยู่แล้วตอนจบรอบ)
 --
--- ทำไมวิธีเดิม (ไล่เขียนค่าทุกเฟรม) ไม่ได้ผล
---   เพราะ TweenService อัปเดตค่ากล้องในเฟรมนั้น ๆ หลังจาก BindToRenderStep ของเรา
---   ผลคือ เราเขียน 70 -> tween เขียนทับ 95 -> ภาพที่เรนเดอร์ออกมาเลยซูมไปตลอด
---   พอเกม tween กลับมา 70 เราเขียน 70 ทับอีกรอบ จอเลย "หายเร็วขึ้น"
---   นั่นคืออาการที่เห็น ไม่ใช่กล้องเสีย
---
--- จุดที่สั่งซูมทั้งหมดในเกมวิ่งผ่าน TweenService:Create ตัวเดียวกัน
---   Utils/CameraUtils.lua:37    TWFOV  -> FinishStage ตอนจบสเตจ (0.25 วิ ไปที่ 95)
---   Tool/CameraService.lua:569  ChangeFOV
---   (CameraUtils.lua:41 ResetFOV เป็นการเขียนค่าตรง 70 อยู่แล้ว ไม่ต้องแตะ)
-local function blockFovTween()
-    local hook = hookmetamethod
-    if type(hook) ~= "function" then
-        local okG, g = pcall(getgenv)
-        if okG and type(g) == "table" then
-            hook = g.hookmetamethod
-            if type(hook) ~= "function" and type(g.hook) == "table" then
-                hook = g.hook.hookmetamethod
-            end
-        end
-    end
-    if type(hook) ~= "function" then return false end
+-- หลัดเลือดบอส = PlayerGui.Hud.Top.BossHP
+--   (TopGUI.lua:21, OpenBossHP -> ListenOpenBossBar)
+-- หลัดเลือดมอน = EnemyHPUI ติดที่ PrimaryPart ของมอน ลบใน stripEnemyHpBar
+local uiHidden = false
 
-    local oldCreate = nil
-    local ok = pcall(function()
-        oldCreate = hook(game:GetService("TweenService"), "Create", function(self, tweenInfo, props)
-            if type(props) == "table" and props.FieldOfView ~= nil then
-                -- ทำสำเนาแทนการแก้ตารางของเกม กันไม่ให้กระทบ tween อื่น
-                --   เกมสร้างตารางใหม่ทุกครั้งอยู่แล้ว (CameraUtils.lua:37 สร้าง inline)
-                local clean = {}
-                local left = 0
-                for key, value in pairs(props) do
-                    if key ~= "FieldOfView" then
-                        clean[key] = value
-                        left = left + 1
-                    end
-                end
-                -- ถ้า tween ตัวนี้แตะ FOV อย่างเดียว เปลี่ยนเป้าหมายเป็นค่าปกติ
-                --   แทนที่จะลบออกจนตารางว่าง เพราะ tween ที่ไม่มีเส้นทางเลย
-                --   แล้ว Completed:Wait() ของเกมอาจค้าง (CameraService.lua:570)
-                if left == 0 then
-                    clean.FieldOfView = DEFAULT_FOV
-                end
-                props = clean
-            end
-            return oldCreate(self, tweenInfo, props)
-        end)
-    end)
-    return ok and type(oldCreate) == "function"
-end
+local function hideStageUI()
+    if uiHidden then return end
+    uiHidden = true
 
--- ---------- ทางสำรอง: เขียนค่าทับทุกเฟรม ----------
--- ครอบไว้ให้การเขียนค่าตรง ๆ ที่ hook ไม่ได้ เช่น CameraService.lua:566
---   CurrentCamera.FieldOfView = a2  (พารามิเตอร์ตัวที่สามเป็น true)
--- priority 200 คือค่าสูงสุดที่ Roblox รับได้ ค่าที่ใหญ่กว่านี้จะถูกตัดทิ้ง
-local function forceFovEveryFrame()
     local RunService = game:GetService("RunService")
-    RunService:BindToRenderStep("SugarNoFov", 200, function()
-        local cam = workspace.CurrentCamera
-        if cam and cam.FieldOfView ~= DEFAULT_FOV then
-            cam.FieldOfView = DEFAULT_FOV
+    RunService:BindToRenderStep("SugarHideStageUI", 200, function()
+        local gui = player:FindFirstChild("PlayerGui")
+        local hud = gui and gui:FindFirstChild("Hud")
+        local top = hud and hud:FindFirstChild("Top")
+        if not top then return end
+        local back = top:FindFirstChild("Return")
+        if back and back.Visible then
+            pcall(function() back.Visible = false end)
+        end
+        local boss = top:FindFirstChild("BossHP")
+        if boss and boss.Visible then
+            pcall(function() boss.Visible = false end)
         end
     end)
-end
-
-local function lockFov()
-    if fovLocked then return end
-    fovLocked = true
-    blockFovTween()
-    forceFovEveryFrame()
 end
 
 -- ============================================
@@ -1372,8 +1328,8 @@ function AutoFarm.register(context)
         display[i] = (name:gsub("_", " "))
     end
 
-    -- กันจอซูมเข้าออกตอนเข้า-จบสเตจ ตั้งครั้งเดียวตลอดอายุโมดูล
-    lockFov()
+    -- ซ่อน UI ของสเตจ ตั้งครั้งเดียวตลอดอายุโมดูล
+    hideStageUI()
 
     local trainSection = tab:Section({Title = "Train", Opened = true})
     if trainSection then
