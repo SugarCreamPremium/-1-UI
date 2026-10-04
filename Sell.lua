@@ -1,30 +1,50 @@
--- Version 6.08
--- แถบขายของ (มี 2 ตัวเลือก ใช้คนละเรื่องกัน)
+-- Version 9.26
+-- แถบขายของอัตโนมัติ (ขายเฉพาะอาวุธ/เกราะ/หมวก ไม่ขายแร่)
 --
---   1) "ขายแร่จนกว่าจะอัปเกรดครบ"  ขายเฉพาะแร่ และหยุดเองเมื่ออัปครบทั้ง 3 สถิติ
---   2) "ขายของอัตโนมัติ"          ขายเฉพาะอาวุธ/เกราะ/หมวก ไม่ขายแร่
---                                  และเว้นชิ้นที่ใส่อยู่กับชิ้นที่ดีกว่าของที่ใส่อยู่
+-- กติกาที่ใช้
+--   1) ขายเฉพาะอาวุธ/เกราะ/หมวก   แร่และของชนิดอื่นไม่แตะเลย
+--   2) ห้ามขายชิ้นที่ดีที่สุด       คำนวณพลังทุกชิ้นก่อน แล้วเก็บชิ้นที่แรงที่สุดของแต่ละช่องไว้เสมอ
+--   3) เว้นของที่ใส่อยู่           ของที่ใส่อยู่ขายไม่ได้อยู่แล้ว
+--   4) เว้นชิ้นที่แรงกว่าของที่ใส่อยู่  เก็บไว้ให้ผู้ใช้เอาไปเปลี่ยนเอง
+--   ที่เหลือ (รวมถึงตัวสำรองของ ID เดียวกัน) -> ขายหมด
+--
+-- "พลัง" ของชิ้นหนึ่ง คำนวณตามสูตรของเกม ไม่ใช้ราคาขายเป็นตัวตัดสิน
+--   อาวุธ      พลัง = Train(ID)    x (1 + Boost(Level))
+--   เกราะ/หมวก พลัง = AttriNum(ID) x (1 + Boost(Level))
+--     (Utils/BalanceUtils.lua:305-353  GetWeaponTrainValue / GetArmorValue)
+--   Level คือระดับตีบวง Enhance อยู่ที่ entry.Level
+--   Boost มาจาก Config/Enhant/Config.lua ระดับ 0..20
+--
+-- ทำไมต้องเทียบพลัง ไม่เทียบราคา
+--   ราคากับพลังไม่ได้ไปพร้อมกัน เช่น
+--     HHat_3     ราคา     25   AttriNum 0.24
+--     HHat_4     ราคา     95   AttriNum 0.24   แพงกว่า 4 เท่า แต่พลังเท่ากันเป๊ะ
+--     LArmor_15  ราคา 98000   AttriNum 0.62
+--     LArmor_16  ราคา 140000  AttriNum 0.65   แพงกว่า 43% แต่พลังต่างกันแค่ 5%
+--   ถ้าเทียบราคา ของแพงแต่อ่อนกว่าจะถูกเก็บไว้ ส่วนของถูกแต่แรงกว่าจะถูกขายทิ้ง
 --
 -- กลไกของเกมที่ใช้ (อ่านจากดัมป์):
 --   ขาย:  Backpack.TrySellItemRE:FireServer(uuid, จำนวน)
---         (LocalData/BackpackData.lua:126-134  TrySellItem(p1, p2) -> u26:FireServer(p1, p2))
+--         (LocalData/BackpackData.lua:109-114  TrySellItem(p1, p2) -> u26:FireServer(p1, p2))
 --         p1 = key ของชิ้นนั้นใน Backpack.have ไม่ใช่ field UUID
 --         p2 = จำนวน  ปุ่ม "ขาย 1" ส่ง 1  ปุ่ม "ขายทั้งกอง" ส่ง 9999
---         (GuiUtils/SellGUI.lua:137,140)
+--         (GuiUtils/SellGUI.lua:105,109)
 --   ขายทั้งหมด: Backpack.TrySellAllRE:FireServer()  = ขายทุกชิ้นรวมทั้งที่ใส่อยู่
---         (BackpackData.lua:136-138  SellAll -> u30:FireServer())
+--         (BackpackData.lua:116-118  SellAll -> u30:FireServer())
 --         อันนี้ไม่มีตัวกรอง ใช้ไม่ได้ ถ้าอยากเลี่ยงของที่ใส่อยู่
 --   รายการของ: Backpack = { have = { [uuid] = {...} }, equiped = { [ช่อง] = uuid } }
---         (BackpackData.lua:51 GetItemData -> u13.have[p1]
---          BackpackData.lua:58 GetEquipUUIDByIndex(p1) -> u13.equiped[p1])
---         ช่องที่ใส่ได้ = "Weapon" / "Armor" / "Hat"  (GetWeaponSkillIDByIndex ใช้ "Weapon")
---   ของที่ใส่อยู่: สร้างชุด uuid จากค่าใน equiped แล้วเทียบ (BackpackData.lua:107 IsEquipedUUID)
+--         (BackpackData.lua:35-40  GetItemData -> u13.have[p1]
+--          BackpackData.lua:42-47  GetEquipUUIDByIndex(p1) -> u13.equiped[p1])
+--   ช่องที่ใส่ได้ = "Weapon" / "Armor" / "Hat" และ entry.Type ก็เป็นค่านี้เป๊ะ
+--         ปุ่ม Equip ส่ง entry.Type ไปเลย (BackpackGUI.lua:97-102)
+--         (GetWeaponSkillIDByIndex ใช้ "Weapon")
+--   ของที่ใส่อยู่: สร้างชุด uuid จากค่าใน equiped แล้วเทียบ (BackpackData.lua:90-99 IsEquipedUUID)
 --   จำนวนของแต่ละชิ้น: entry.Number  ถ้าไม่มีฟิลด์นี้แปลว่าเป็นชิ้นเดียว
---         (BackpackData.lua:167-175  GetNumberByIDType -> v1.Number หรือ 1)
---   ราคาขาย: Config[ID].Price เหมือนกันหมดทั้งอาวุธ/เกราะ/หมวก/แร่
+--         (BackpackData.lua:144-153  GetNumberByIDType -> v1.Number หรือ 1)
+--   ราคาขาย: Config[ID].Price เหมือนกันหมดทั้งอาวุธ/เกราะ/หมวก
 --         (Config/Ore/Helper.lua:88 GetSellPrice -> Config[p1].Price
---          Config/Armor/Helper.lua:78 GetSellPrice -> Config[p1].Price
---          Config/Weapon/Helper.lua:107 GetSellPrice -> Config[p1].Price)
+--          Config/Armor/Helper.lua:61 GetSellPrice -> Config[p1].Price
+--          Config/Weapon/Helper.lua:87 GetSellPrice -> Config[p1].Price)
 --         ID ในกระเป๋าคือ key ของ Config เป๊ะ ๆ เช่น "K_5", "LHat_3", "Ore_12"
 --         เก็บราคาไว้ในตาราง PRICE ด้านล่าง เพราะ require Config ไม่ได้ (ดูหัวไฟล์ Upgrade.lua)
 local Sell = {}
@@ -83,17 +103,59 @@ local PRICE = {
     ["Ore_43"] = 36732, ["Ore_44"] = 42000, ["Ore_45"] = 47000, ["Ore_46"] = 53200, ["Ore_47"] = 60000, ["Ore_48"] = 80000,
 }
 
--- ช่องที่ใส่ของได้ ใช้ตอนเทียบกับของที่ใส่อยู่
-local EQUIP_SLOTS = {Weapon = true, Armor = true, Hat = true}
+-- ============================================
+-- พลังของแต่ละ ID (ตัวคูณหลัก ไม่รวมระดับตีบวง)
+-- ============================================
+--   อาวุธ G_/K_        -> Config/Weapon/Config.lua .Train
+--   เกราะ/หมวก LArmor_/HArmor_/LHat_/HHat_ -> Config/Armor/Config.lua .AttriNum
+--     (BalanceUtils.lua:320 GetMainAffix -> Weapon.Helper .Train
+--                   BalanceUtils.lua:337 GetMainAffix -> Armor.Helper  .AttriNum)
+-- เฉพาะ ID ที่มีราคาขาย เพราะพวก *_1001/*_1002/*_1101 (BestPercent) ไม่มีราคา
+--   และคิดพลังตามคราฟของผู้เล่น ซึ่งดึงมาไม่ได้จาก GetTotalDataRF ตอนนี้
+--   ชิ้นพวกนั้นอยู่ใน PRICE ว่างเปล่าอยู่แล้ว จึงไม่มีทางถูกขาย
+local POWER = {
+    ["G_1"] = 2, ["G_2"] = 6, ["G_3"] = 15, ["G_4"] = 36,
+    ["G_5"] = 59, ["G_6"] = 148, ["G_7"] = 354, ["G_8"] = 590,
+    ["G_9"] = 1475, ["G_10"] = 3658, ["G_11"] = 5900, ["G_12"] = 14750,
+    ["G_13"] = 82600, ["G_14"] = 177000, ["G_15"] = 354000, ["G_16"] = 885000,
+    ["G_17"] = 2218400, ["G_18"] = 4720000, ["G_19"] = 11800000, ["G_20"] = 29500000,
+    ["G_21"] = 59000000, ["G_22"] = 118000000, ["G_23"] = 177000000, ["G_24"] = 236000000,
+    ["G_25"] = 472000000, ["G_26"] = 708000000,
+    ["K_1"] = 1, ["K_2"] = 5, ["K_3"] = 12, ["K_4"] = 30,
+    ["K_5"] = 50, ["K_6"] = 125, ["K_7"] = 300, ["K_8"] = 500,
+    ["K_9"] = 1250, ["K_10"] = 3100, ["K_11"] = 5000, ["K_12"] = 12500,
+    ["K_13"] = 70000, ["K_14"] = 150000, ["K_15"] = 300000, ["K_16"] = 750000,
+    ["K_17"] = 1880000, ["K_18"] = 4000000, ["K_19"] = 10000000, ["K_20"] = 25000000,
+    ["K_21"] = 50000000, ["K_22"] = 100000000, ["K_23"] = 150000000, ["K_24"] = 200000000,
+    ["K_25"] = 400000000, ["K_26"] = 600000000,
+    ["LArmor_1"] = 0.05, ["LArmor_2"] = 0.055, ["LArmor_3"] = 0.06, ["LArmor_4"] = 0.1,
+    ["LArmor_5"] = 0.14, ["LArmor_6"] = 0.2, ["LArmor_7"] = 0.25, ["LArmor_8"] = 0.3,
+    ["LArmor_9"] = 0.36, ["LArmor_10"] = 0.41, ["LArmor_11"] = 0.45, ["LArmor_12"] = 0.5,
+    ["LArmor_13"] = 0.55, ["LArmor_14"] = 0.59, ["LArmor_15"] = 0.62, ["LArmor_16"] = 0.65,
+    ["LHat_1"] = 0.1, ["LHat_2"] = 0.15, ["LHat_3"] = 0.2, ["LHat_4"] = 0.2,
+    ["LHat_5"] = 0.3, ["LHat_6"] = 0.3, ["LHat_7"] = 0.35, ["LHat_8"] = 0.4,
+    ["LHat_9"] = 0.4, ["LHat_10"] = 0.45, ["LHat_11"] = 0.5, ["LHat_12"] = 0.55,
+    ["LHat_13"] = 0.6, ["LHat_14"] = 0.7, ["LHat_15"] = 0.75, ["LHat_16"] = 0.85,
+    ["HArmor_1"] = 0.06, ["HArmor_2"] = 0.07, ["HArmor_3"] = 0.08, ["HArmor_4"] = 0.12,
+    ["HArmor_5"] = 0.17, ["HArmor_6"] = 0.24, ["HArmor_7"] = 0.3, ["HArmor_8"] = 0.36,
+    ["HArmor_9"] = 0.43, ["HArmor_10"] = 0.49, ["HArmor_11"] = 0.54, ["HArmor_12"] = 0.59,
+    ["HArmor_13"] = 0.65, ["HArmor_14"] = 0.7,
+    ["HHat_1"] = 0.12, ["HHat_2"] = 0.18, ["HHat_3"] = 0.24, ["HHat_4"] = 0.24,
+    ["HHat_5"] = 0.36, ["HHat_6"] = 0.36, ["HHat_7"] = 0.42, ["HHat_8"] = 0.48,
+    ["HHat_9"] = 0.48, ["HHat_10"] = 0.54, ["HHat_11"] = 0.59, ["HHat_12"] = 0.65,
+    ["HHat_13"] = 0.71, ["HHat_14"] = 0.83,
+}
 
--- ============================================
--- เลเวลสูงสุดของแต่ละสถิติ
--- ============================================
--- เลขสุดท้ายในตารางราคา = เลเวลที่อัปไม่ได้อีกแล้ว
---   (Config/Upgrade/Helper.lua:28-31  ไม่มีแถวถัดไป = ตัน)
--- ค่านี้ต้องตรงกับ PRICE ใน Upgrade.lua ถ้าเกมอัปเวอร์ชันใหม่ให้ตรวจทั้งสองไฟล์
-local MAX_LEVEL = {OrePack = 12, Train = 12, Luck = 12}
-local STATS = {"OrePack", "Train", "Luck"}
+-- ตัวคูณจากระดับตีบวง Enhance (Config/Enhant/Config.lua ช่อง Boost)
+--   index = entry.Level  เกิน 20 ให้ถือว่าเป็น 0 ตามที่ Enhant.Helper.GetBoost ทำ
+local ENHANT_BOOST = {
+    [0] = 0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.4, 0.55, 0.7, 0.85, 1,
+    1.15, 1.3, 1.5, 1.7, 1.9, 2.1, 2.3, 2.6, 2.9, 3.2,
+}
+
+-- ช่องที่ใส่ของได้ ใช้แยกชิ้นที่จะขาย และเทียบกับของที่ใส่อยู่
+--   ค่าใน entry.Type ตรงกับชื่อช่องใน Backpack.equiped เป๊ะ
+local EQUIP_SLOTS = {Weapon = true, Armor = true, Hat = true}
 
 -- ============================================
 -- อ่านข้อมูลผู้เล่น
@@ -101,13 +163,6 @@ local STATS = {"OrePack", "Train", "Luck"}
 -- แคชข้อมูลจาก GetTotalDataRF ไว้ แล้วอัปเดตจาก UpdateDataRE ที่เซิร์ฟเวอร์ส่งมา
 --   ProfileData.lua:27-37  UpdateDataRE.OnClientEvent -> u26[key] = value
 local total = nil
-
-local function readLevel(data, statName)
-    local store = data and data.Upgrade
-    local entry = store and store[statName]
-    local lv = entry and tonumber(entry.Level)
-    return lv or 0
-end
 
 -- ดึงข้อมูลทั้งก้อนมาใหม่ ได้ทั้งรายการของและเลเวลอัปในรอบเดียว
 --   ProfileData.init ก็เรียกตัวนี้ตอนแรกเหมือนกัน (ProfileData.lua:54)
@@ -143,7 +198,7 @@ local function have()
 end
 
 -- uuid ที่ใส่อยู่ทั้งหมด เป็นชุด
---   (BackpackData.lua:107-116  IsEquipedUUID ไล่ค่าใน equiped ทั้งหมด)
+--   (BackpackData.lua:90-99  IsEquipedUUID ไล่ค่าใน equiped ทั้งหมด)
 local function equipedSet()
     local set = {}
     local pack = total and total.Backpack
@@ -173,15 +228,13 @@ local function priceOf(entry)
     return PRICE[entry.ID]
 end
 
--- อัปครบทุกตัวหรือยัง = ครบแล้วก็ไม่ต้องขายอีก เพราะเงินไม่มีที่ใช้
-local function allStatsMaxed()
-    if not total then return false end
-    for _, name in ipairs(STATS) do
-        if readLevel(total, name) < MAX_LEVEL[name] then
-            return false
-        end
-    end
-    return true
+-- พลังของชิ้นหนึ่ง ตามสูตรเดียวกับที่เกมใช้แสดงค่าในกระเป๋า
+--   ไม่มีใน POWER (เช่นของที่ขายไม่ได้) -> nil ไม่ต้องขายอยู่แล้ว
+local function powerOf(entry)
+    local affix = type(entry) == "table" and POWER[entry.ID] or nil
+    if not affix then return nil end
+    local boost = ENHANT_BOOST[tonumber(entry.Level) or 0] or 0
+    return affix * (1 + boost)
 end
 
 -- ============================================
@@ -198,84 +251,80 @@ local function fireSell(key)
     return (pcall(function() remote:FireServer(key, 9999) end))
 end
 
--- ---------- ตัวที่ 1: ขายแร่ จนกว่าจะอัปเกรดครบ ----------
-local function oreKeys()
-    local list = have()
-    if not list then return nil end
-    local keys = {}
-    for key, entry in pairs(list) do
-        -- แร่เท่านั้น ไม่แตะอาวุธ/เกราะ/หมวก เพราะผู้ใช้อาจจะเก็บไว้ใช้
-        if type(entry) == "table" and entry.Type == "Ore" then
-            keys[#keys + 1] = key
-        end
-    end
-    return keys
-end
-
-local function sellOres()
-    local keys = oreKeys()
-    if not keys or #keys == 0 then return 0 end
-    local sold = 0
-    for _, key in ipairs(keys) do
-        if fireSell(key) then
-            sold = sold + 1
-        end
-        task.wait(SELL_GAP)
-    end
-    return sold
-end
-
--- ---------- ตัวที่ 2: ขายอุปกรณ์ แต่เลี่ยงชิ้นที่ควรเก็บ ----------
--- ของชนิดอื่น (รวมถึงแร่) -> ไม่แตะทั้งสิ้น ตัวนี้ขายเฉพาะอาวุธ/เกราะ/หมวก
---   แร่มีตัวจัดการของตัวเองอยู่แล้วในสวิตช์แรก ถ้าขายรวมที่นี่แร่ที่จะเอาไปคราฟจะหายไป
--- อาวุธ/เกราะ/หมวก -> เก็บไว้เมื่อ
---   1) เป็นชิ้นที่ใส่อยู่ตอนนี้                       (ขายไม่ได้อยู่แล้ว)
---   2) แพงกว่าของที่ใส่อยู่                          (เก็บไว้ให้ผู้ใช้เอาไปเปลี่ยนเอง)
---   ที่เหลือรวมถึงตัวสำรองของ ID เดียวกัน -> ขายหมด
--- ของที่ไม่มีราคาขาย -> เซิร์ฟเวอร์ปฏิเสธอยู่ดี (Material/Buff/Potion) ไม่ยิงรัว
-local function gearKeys()
+-- ============================================
+-- เลือกว่าจะขายอะไร
+-- ============================================
+-- ขายเฉพาะอาวุธ/เกราะ/หมวกที่ยังไม่ใส่อยู่  แร่และของชนิดอื่นไม่แตะทั้งสิ้น
+--   (ของที่ไม่มีราคาขาย เช่น Material/Buff/Potion เซิร์ฟเวอร์ปฏิเสธอยู่ดี ไม่ยิงรัว)
+--
+-- เก็บไว้เสมอ ไม่ขาย
+--   1) ชิ้นที่ดีที่สุดของช่องนั้น      เช็คพลังทุกชิ้นแล้วเลือกอันสูงสุดเป็นอันเดียว
+--                                   พลังเท่ากันให้เอาอันที่ราคาสูงกว่า (ของหายากกว่า)
+--   2) ชิ้นที่แรงกว่าของที่ใส่อยู่     ไว้ให้ผู้ใช้เอาไปเปลี่ยนเอง ถ้าช่องนั้นยังว่างอยู่จะได้เก็บแค่อันเดียว
+--   (ของที่ใส่อยู่อยู่แล้ว ไม่ต้องนับ เพราะขายไม่ได้อยู่แล้ว)
+-- ที่เหลือรวมถึงตัวสำรองของ ID เดียวกัน -> ขายหมด
+local function sellableKeys()
     local list = have()
     if not list then return nil end
 
     local worn = equipedSet()
-    local kept = {}
-    local keys = {}
+    local bySlot = {}
 
-    -- นับชิ้นที่ใส่อยู่ก่อน เพื่อไม่ให้เก็บตัวสำรองของ ID เดียวกับที่ใส่อยู่
-    for slot in pairs(EQUIP_SLOTS) do
-        local entry = equipedItem(slot)
-        if entry and entry.ID then
-            kept[entry.ID] = true
+    -- แยกชิ้นที่ขายได้ของแต่ละช่อง พร้อมคำนวณพลังเก็บไว้เทียบ
+    for key, entry in pairs(list) do
+        local slot = type(entry) == "table" and EQUIP_SLOTS[entry.Type] and entry.Type or nil
+        local price = slot and priceOf(entry) or nil
+        local power = price and powerOf(entry) or nil
+        if power and power > 0 and not worn[key] then
+            local bucket = bySlot[slot]
+            if not bucket then
+                bucket = {}
+                bySlot[slot] = bucket
+            end
+            bucket[#bucket + 1] = {key = key, power = power, price = price}
         end
     end
 
-    for key, entry in pairs(list) do
-        if type(entry) == "table" then
-            -- เฉพาะอาวุธ/เกราะ/หมวก แร่และของชนิดอื่นไม่ขายที่นี่
-            local price = EQUIP_SLOTS[entry.Type] and priceOf(entry)
+    local keep = {}
+    local keys = {}
 
-            if price and price > 0 and not worn[key] then
-                -- เพิ่งเจอ ID นี้ครั้งแรก -> ตัดสินจากราคาเทียบของที่ใส่อยู่
-                if not kept[entry.ID] then
-                    kept[entry.ID] = true
-                    local theirs = priceOf(equipedItem(entry.Type))
-                    if theirs and price > theirs then
-                        -- แพงกว่าของที่ใส่อยู่ = เก็บไว้ ไม่ขาย
-                    else
-                        keys[#keys + 1] = key
-                    end
-                else
-                    -- ID ซ้ำ = ตัวสำรอง ขายได้เลย
-                    keys[#keys + 1] = key
+    for slot, bucket in pairs(bySlot) do
+        -- ชิ้นที่ดีที่สุดของช่องนี้ เทียบพลังก่อน ถ้าพลังเท่ากันค่อยดูราคา แล้วสุดท้ายเทียบ key
+        --   ไม่งั้นชิ้นที่พลังเท่ากันเป๊ะจะได้ผลตามลำดับ pairs() ซึ่งสุ่มทุกครั้งที่เปิดเกม
+        local best = bucket[1]
+        for i = 2, #bucket do
+            local it = bucket[i]
+            if it.power > best.power
+                or (it.power == best.power and it.price > best.price)
+                or (it.power == best.power and it.price == best.price and it.key < best.key)
+            then
+                best = it
+            end
+        end
+        keep[best.key] = true
+
+        -- ชิ้นที่แรงกว่าของที่ใส่อยู่ เก็บไว้เผื่อผู้ใช้อยากเปลี่ยน
+        local theirs = powerOf(equipedItem(slot))
+        if theirs then
+            for i = 1, #bucket do
+                if bucket[i].power > theirs then
+                    keep[bucket[i].key] = true
                 end
             end
         end
+
+        for i = 1, #bucket do
+            if not keep[bucket[i].key] then
+                keys[#keys + 1] = bucket[i].key
+            end
+        end
     end
+
     return keys
 end
 
 local function sellGears()
-    local keys = gearKeys()
+    local keys = sellableKeys()
     if not keys or #keys == 0 then return 0 end
     local sold = 0
     for _, key in ipairs(keys) do
@@ -288,7 +337,7 @@ local function sellGears()
 end
 
 -- ============================================
--- ลูปของแต่ละตัว (คนละลูปกัน เปิด-ปิดได้อิสระ)
+-- ลูปขาย
 -- ============================================
 local SELL_EVERY = 1.5
 
@@ -300,10 +349,7 @@ local function sellLoop()
         if not refresh() then
             task.wait(1)
         else
-            -- อัปครบแล้ว = เงินไม่มีที่ใช้ ขายต่อก็เปล่า ๆ
-            if not allStatsMaxed() then
-                sellOres()
-            end
+            sellGears()
             task.wait(SELL_EVERY)
         end
     end
@@ -321,32 +367,6 @@ local function setSell(value)
     end
 end
 
-local allEnabled = false
-local allRunning = false
-
-local function sellAllLoop()
-    while allEnabled do
-        if not refresh() then
-            task.wait(1)
-        else
-            sellGears()
-            task.wait(SELL_EVERY)
-        end
-    end
-    allRunning = false
-end
-
-local function setSellAll(value)
-    allEnabled = value == true
-    if allEnabled then
-        refresh()
-        if not allRunning then
-            allRunning = true
-            task.spawn(sellAllLoop)
-        end
-    end
-end
-
 -- ============================================
 -- register: ผูกกับแถบของ WindUI
 -- ============================================
@@ -357,16 +377,10 @@ function Sell.register(context)
     local section = tab:Section({Title = "ขายของอัตโนมัติ", Opened = true})
     if section then
         section:Toggle({
-            Title = "ขายแร่จนกว่าจะอัปเกรดครบ",
-            Desc = "ขายแร่ในกระเป๋าอัตโนมัติ ถ้าอัปเกรดครบทั้ง 3 จนตันแล้วจะไม่ขาย",
+            Title = "ขายอาวุธ/เกราะ/หมวกอัตโนมัติ",
+            Desc = "ขายเฉพาะอาวุธ/เกราะ/หมวก (ไม่ขายแร่) เว้นชิ้นที่ดีที่สุดของแต่ละช่องไว้เสมอ เว้นชิ้นที่ใส่อยู่ และเว้นชิ้นที่ดีกว่าของที่ใส่อยู่",
             Value = false,
             Callback = setSell,
-        })
-        section:Toggle({
-            Title = "ขายของอัตโนมัติ",
-            Desc = "ขายเฉพาะอาวุธ/เกราะ/หมวก (ไม่ขายแร่) เว้นชิ้นที่ใส่อยู่ ชิ้นที่ดีกว่าของที่ใส่อยู่ และตัวสำรองที่ซ้ำกัน",
-            Value = false,
-            Callback = setSellAll,
         })
     end
 
