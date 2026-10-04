@@ -1,8 +1,9 @@
--- Version 12.38
+-- Version 6.08
 -- แถบขายของ (มี 2 ตัวเลือก ใช้คนละเรื่องกัน)
 --
 --   1) "ขายแร่จนกว่าจะอัปเกรดครบ"  ขายเฉพาะแร่ และหยุดเองเมื่ออัปครบทั้ง 3 สถิติ
---   2) "ขายของอัตโนมัติ"          ขายของทุกชิ้นในกระเป๋า แต่เลี่ยงของที่ต้องเก็บไว้
+--   2) "ขายของอัตโนมัติ"          ขายเฉพาะอาวุธ/เกราะ/หมวก ไม่ขายแร่
+--                                  และเว้นชิ้นที่ใส่อยู่กับชิ้นที่ดีกว่าของที่ใส่อยู่
 --
 -- กลไกของเกมที่ใช้ (อ่านจากดัมป์):
 --   ขาย:  Backpack.TrySellItemRE:FireServer(uuid, จำนวน)
@@ -224,14 +225,15 @@ local function sellOres()
     return sold
 end
 
--- ---------- ตัวที่ 2: ขายของทั้งหมด แต่เลี่ยงของที่ควรเก็บ ----------
--- แร่และของชนิดอื่นที่มีราคาขาย -> ขายหมดทุกชิ้น ไม่ต้องเก็บไว้
--- อาวุธ/เกราะ/หมวก               -> เก็บไว้แค่ชิ้นเดียวของแต่ละ ID
---   1) ชิ้นที่ใส่อยู่ตอนนี้        -> เก็บ (นับเป็นชิ้นที่เก็บไว้ของ ID นั้นเลย)
---   2) ของที่แพงกว่าของที่ใส่อยู่  -> เก็บ ไว้ให้ผู้ใช้เอาไปเปลี่ยนเอง
---   3) ถ้ามีหลายชิ้นของ ID เดียวกัน -> เก็บชิ้นแรก ที่เหลือขายเป็นตัวสำรอง
---   4) ของที่ไม่มีราคาขาย        -> เซิร์ฟเวอร์ปฏิเสธอยู่ดี (Material/Buff/Potion) ไม่ยิงรัว
-local function sellableKeys()
+-- ---------- ตัวที่ 2: ขายอุปกรณ์ แต่เลี่ยงชิ้นที่ควรเก็บ ----------
+-- ของชนิดอื่น (รวมถึงแร่) -> ไม่แตะทั้งสิ้น ตัวนี้ขายเฉพาะอาวุธ/เกราะ/หมวก
+--   แร่มีตัวจัดการของตัวเองอยู่แล้วในสวิตช์แรก ถ้าขายรวมที่นี่แร่ที่จะเอาไปคราฟจะหายไป
+-- อาวุธ/เกราะ/หมวก -> เก็บไว้เมื่อ
+--   1) เป็นชิ้นที่ใส่อยู่ตอนนี้                       (ขายไม่ได้อยู่แล้ว)
+--   2) แพงกว่าของที่ใส่อยู่                          (เก็บไว้ให้ผู้ใช้เอาไปเปลี่ยนเอง)
+--   ที่เหลือรวมถึงตัวสำรองของ ID เดียวกัน -> ขายหมด
+-- ของที่ไม่มีราคาขาย -> เซิร์ฟเวอร์ปฏิเสธอยู่ดี (Material/Buff/Potion) ไม่ยิงรัว
+local function gearKeys()
     local list = have()
     if not list then return nil end
 
@@ -249,24 +251,22 @@ local function sellableKeys()
 
     for key, entry in pairs(list) do
         if type(entry) == "table" then
-            local price = priceOf(entry)
+            -- เฉพาะอาวุธ/เกราะ/หมวก แร่และของชนิดอื่นไม่ขายที่นี่
+            local price = EQUIP_SLOTS[entry.Type] and priceOf(entry)
 
-            if price and price > 0 then
-                if not EQUIP_SLOTS[entry.Type] then
-                    -- แร่ -> ขายหมด
-                    keys[#keys + 1] = key
-                elseif not worn[key] then
-                    -- ของที่ยังไม่ได้ใส่ และยังไม่เคยเก็บ ID นี้ไว้
-                    if kept[entry.ID] then
-                        keys[#keys + 1] = key
-                    else
-                        kept[entry.ID] = true
+            if price and price > 0 and not worn[key] then
+                -- เพิ่งเจอ ID นี้ครั้งแรก -> ตัดสินจากราคาเทียบของที่ใส่อยู่
+                if not kept[entry.ID] then
+                    kept[entry.ID] = true
+                    local theirs = priceOf(equipedItem(entry.Type))
+                    if theirs and price > theirs then
                         -- แพงกว่าของที่ใส่อยู่ = เก็บไว้ ไม่ขาย
-                        local theirs = priceOf(equipedItem(entry.Type))
-                        if not (theirs and price > theirs) then
-                            keys[#keys + 1] = key
-                        end
+                    else
+                        keys[#keys + 1] = key
                     end
+                else
+                    -- ID ซ้ำ = ตัวสำรอง ขายได้เลย
+                    keys[#keys + 1] = key
                 end
             end
         end
@@ -274,8 +274,8 @@ local function sellableKeys()
     return keys
 end
 
-local function sellAll()
-    local keys = sellableKeys()
+local function sellGears()
+    local keys = gearKeys()
     if not keys or #keys == 0 then return 0 end
     local sold = 0
     for _, key in ipairs(keys) do
@@ -329,7 +329,7 @@ local function sellAllLoop()
         if not refresh() then
             task.wait(1)
         else
-            sellAll()
+            sellGears()
             task.wait(SELL_EVERY)
         end
     end
@@ -364,7 +364,7 @@ function Sell.register(context)
         })
         section:Toggle({
             Title = "ขายของอัตโนมัติ",
-            Desc = "ขายแร่หมด ขายอาวุธ/เกราะ/หมวกที่ซ้ำกันเหลือชิ้นเดียว เว้นเฉพาะที่ใส่อยู่และที่ดีกว่าของที่ใส่อยู่",
+            Desc = "ขายเฉพาะอาวุธ/เกราะ/หมวก (ไม่ขายแร่) เว้นชิ้นที่ใส่อยู่ ชิ้นที่ดีกว่าของที่ใส่อยู่ และตัวสำรองที่ซ้ำกัน",
             Value = false,
             Callback = setSellAll,
         })
