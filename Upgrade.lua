@@ -1,4 +1,4 @@
--- Version 2.18
+-- Version 5.38
 -- แถบ Upgrade (อัปเกรดอัตโนมัติ)
 --
 -- กลไกของเกมที่ใช้ (อ่านจากดัมป์):
@@ -188,9 +188,32 @@ local statEnabled = {OrePack = true, Train = true, Luck = true}
 local labels = {}
 
 -- นับครั้งที่ยิงแล้วเลเวลไม่ขยับ ถ้าพัง 3 ครั้งติดก็แสดงว่าเราอ่านเลเวลไม่ได้
---   (หรือเซิร์ฟเวอร์ปฏิเสธ) ถ้าไม่หยุด มันจะยิงซ้ำราคาเดิมไปเรื่อย ๆ เปลืองเงิน
+--   (หรือเซิร์ฟเวอร์ปฏิเสธ) ถ้ายิงต่อก็จะยิงซ้ำราคาเดิมไปเรื่อย ๆ เปลืองเงิน
+--   พังครบก็พักตัวนั้นไว้สักพักค่อยกลับมาลองใหม่ ไม่ใช่ตัดทิ้งถาวร
+--   เพราะสถานการณ์ที่พังบ่อยที่สุดคือ "เงินเพิ่งหมดพอดี" พอเงินมาเติมแล้วต้องอัปต่อได้
 local failCount = {OrePack = 0, Train = 0, Luck = 0}
 local FAIL_LIMIT = 3
+local FAIL_COOLDOWN = 15
+
+-- เวลาที่สถิติตัวนั้นจะกลับมาลองใหม่ (ยังไม่ถึง = กำลังพักอยู่)
+local failUntil = {OrePack = 0, Train = 0, Luck = 0}
+
+-- เลเวลตอนก่อนยิง ใช้เทียบว่าเซิร์ฟเวอร์รับจริงหรือเปล่า
+local lastLevel = {OrePack = nil, Train = nil, Luck = nil}
+
+local function onFail(statName)
+    failCount[statName] = failCount[statName] + 1
+    if failCount[statName] < FAIL_LIMIT then return end
+
+    -- พักไว้ก่อน แล้วล้างตัวนับทิ้ง รอบหน้าจึงเริ่มนับใหม่และลองยิงอีกครั้ง
+    failUntil[statName] = os.clock() + FAIL_COOLDOWN
+    failCount[statName] = 0
+
+    -- อ่านเลเวลใหม่ 1 ครั้ง ถ้าเลเวลขยับจริงแปลว่าเมื่อกี้ซื้อสำเร็จ ไม่ต้องพัก
+    if refreshLevels() and lastLevel[statName] and getLevel(statName) > lastLevel[statName] then
+        failUntil[statName] = 0
+    end
+end
 
 local function buyOnce(statName)
     local remote = UpgradeOnceRE or getRemote("Upgrade", "UpgradeOnceRE")
@@ -204,6 +227,7 @@ local function buyOnce(statName)
     if not coin or coin < price then return false end
 
     local before = getLevel(statName)
+    lastLevel[statName] = before
     pcall(function() remote:FireServer(statName) end)
 
     -- รอให้เลเวลขยับจริง (สูงสุด 1.5 วิ) ถ้าไม่ขยับแปลว่าไม่สำเร็จ อย่ายิงซ้ำ
@@ -213,15 +237,12 @@ local function buyOnce(statName)
         waited = waited + 0.1
         if getLevel(statName) > before then
             failCount[statName] = 0
+            failUntil[statName] = 0
             return true
         end
     end
 
-    failCount[statName] = failCount[statName] + 1
-    if failCount[statName] >= FAIL_LIMIT then
-        -- อ่านเลเวลใหม่ 1 ครั้ง ถ้ายังไม่ขยับก็ถือว่าตัวนี้ซื้อไม่ได้ ข้ามไปก่อน
-        refreshLevels()
-    end
+    onFail(statName)
     return false
 end
 
@@ -231,7 +252,9 @@ local function autoPass()
     local bought = 0
     for _, name in ipairs(STATS) do
         if not autoEnabled then break end
-        if statEnabled[name] and failCount[name] < FAIL_LIMIT and not isMax(name) then
+        -- ตอนนี้พักอยู่ = ยังไม่ถึงเวลากลับมาลองใหม่ ไม่ต้องแตะ
+        local cooling = os.clock() < failUntil[name]
+        if statEnabled[name] and not cooling and not isMax(name) then
             if buyOnce(name) then
                 bought = bought + 1
             end
