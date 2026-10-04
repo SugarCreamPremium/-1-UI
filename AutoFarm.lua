@@ -1,4 +1,4 @@
--- Version 7.34
+-- Version 7.40
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -179,6 +179,34 @@ end
 --   เกมนี้เลือดมันโตแบบทวีคูณ ตัวเลขคงที่จะพัดเมื่อเลือดมอนเกิน
 --   (หมายเหตุ: ห้ามใช้ math.huge - HPCTRL.DamageOnce เอา 1e18 ไปลบ inf
 --    แล้วได้ inf ซึ่ง <= 0 เป็น false = มอนไม่ตาย)
+-- ============================================
+-- ลบแถบเลือดลอยเหนือหัวมอน  <- ตัวที่ทำให้การฆ่าช้าที่สุด
+-- ============================================
+-- เกมแปะ EnemyHPUI ไว้ใต้ PrimaryPart ของมอนตอนสร้าง
+--   (EnemyCTRL.lua:66-70  EnemyHPUI:Clone() -> Parent = a1.PrimaryPart)
+-- แล้วเอา callback มาต่อกับ HPValue.Changed
+--   (EnemyCTRL.lua:72  HPCTRL.ListenHPChanged(v3, ...) -> HPCTRL.lua:50  HPValue.Changed:Connect)
+--
+-- callback นั้นมี task.wait(0.15) กลางทาง เพื่อหน่วงแถบเลือดสีแดง
+--   (EnemyCTRL.lua:126-131  และแบบเปอร์เซ็นต์ที่ :150-155)
+--
+-- Roblox ให้ handler ของ .Changed รันบน thread เดียวกับคนที่เปลี่ยนค่า
+--   = ทุกครั้งที่เราตีมอนแล้ว HP เปลี่ยน ลูปฆ่าของเราจะค้าง 0.15 วิทันที
+--   มอน 2 ตัว = ค้าง 0.30 วิ ต่อรอบ ซึ่งตรงกับที่วัดได้ 0.79 วิ
+--   (ตีแต่ละตัวค้าง 2 ครั้ง: ครั้งที่เราตัด HP เอง และครั้งที่ DamageOnce เขียนค่าทับ)
+--
+-- ลบแถบทิ้ง -> callback เจอว่า ing.Parent == nil -> return ทันที ไม่มี wait เลย
+--   ปลอดภัย: จุดอื่นที่อ้างชื่อ EnemyHPUI คือ DamageManager.client.lua:46
+--     ซึ่งเป็นตัวจัดการการโจมตีของผู้เล่นเอง เราไม่ได้ใช้เส้นทางนั้น
+local function stripEnemyHpBar(enemy)
+    local primary = enemy.PrimaryPart
+    if not primary then return end
+    local bar = primary:FindFirstChild("EnemyHPUI")
+    if bar then
+        pcall(function() bar:Destroy() end)
+    end
+end
+
 local function killAllEnemies()
     local folder = getEnemyFolder()
     if not folder then return end
@@ -187,6 +215,9 @@ local function killAllEnemies()
         --   ยิงซ้ำแล้วไม่ได้อะไร แต่ HurtEnemy จะวนเดินทั้งซากทุกเฟรมตลอด 3 วินาทีนั้น
         --   ยิงแต่ตัวที่ยังมีชีวิต = งานต่อเฟรมน้อยลงตามจำนวนซากที่ค้างอยู่
         if enemy:IsA("Model") and not enemy:GetAttribute("Dead") then
+            -- ต้องลบแถบเลือดก่อนยิง ไม่งั้นทุกครั้งที่ตีจะค้าง 0.15 วิ (ดูหัวฟังก์ชันด้านบน)
+            stripEnemyHpBar(enemy)
+
             -- ตัด HP ให้ 0 ก่อนยิง แล้วยิงทับอีกที
             --   เดิมยิง damage = HP + 1 ซึ่งควรตายทันทีอยู่แล้ว แต่ถ้ามอนตัวไหน
             --   เลือดไม่ใช่ NumberValue หรือถูกเซิร์ฟเวอร์แก้ค่าแข่งเรา ก็จะเหลือเลือด
