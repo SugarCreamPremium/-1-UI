@@ -1,4 +1,4 @@
--- Version 12.23
+-- Version 6.15
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -793,15 +793,30 @@ end
 -- ============================================
 -- Auto Rebirth
 -- ============================================
--- ปุ่มรีเบิร์ธของเกมเช็คแค่ 2 อย่าง (GuiUtils/RebirthGUI.lua:81-93)
---   1) ยังไม่ครบเพดาน  2) เลเวล >= เลเวลที่ต้องใช้ของระดับถัดไป แล้วยิง TryRebirthRE
---     Rebirth/TryRebirthRE:FireServer()  ไม่มีอาร์กิวเมนต์
--- เลเวลที่ต้องใช้ = 25 * จำนวนรีเบิร์ธที่จะไปถึง  ตรงกับ Config/Rebirth/Config.lua ทุกแถว
---   (NeedLevel ไล่ 0, 25, 50, ... 1125 = 25 คูณเลข index พอดี)
--- เพดาน = 45  (Config/Rebirth/Helper.lua:17  #Config - 1)
-local MAX_REBIRTH = 45
+-- ปุ่มรีเบิร์ธของเกมเช็คแค่ 2 อย่าง (GuiUtils/RebirthGUI.lua:82-97)
+--   1) Helper.CheckIsMax(Value)  -> rebirth ถึงเพดานแล้ว ไม่งั้น
+--   2) Helper.GetNeedLevel(Value + 1) <= level  แล้วยิง TryRebirthRE
+--     Rebirth/TryRebirthRE:FireServer()   ไม่มีอาร์กิวเมนต์
+--   NeedLevel = 25 * ลำดับ  ตรงกับ Config/Rebirth/Config.lua ทุกแถว
+--     (แถวแรก 0 แล้ว +25 ทีละแถว ไปจนแถวสุดท้าย 1025)
+--   เพดาน = 42  ไม่ใช่ 45
+--     (Config/Rebirth/Helper.lua:3  u15 = #Config - 1 และ Config.lua มี 43 แถว = index 0..42)
+--     ถ้าใช้เพดานผิดจะเป็นการยิงเกินจนเซิร์ฟเวอร์เงียบ ไม่ใช่แค่ช้าลง
+--
+-- สาเหตุที่ทำให้ "เปิดไปนานๆ แล้วไม่ยอมรีเบิร์ธ" และวิธีกันไว้:
+--   1) ตัวบอกสถานะลูปต้องคืน false เสมอ
+--      เดิม error ครั้งเดียวก็ทำให้ coroutine ตายค้าง ๆ rebirthRunning ค้างเป็น true
+--      ตั้งแต่นั้นสวิตช์จะเปิดลูปใหม่ไม่ได้อีก เพราะเงื่อนไข not rebirthRunning ไม่ผ่าน
+--   2) ต้องแยก "รอเลเวล" ออกจาก "ยิงแล้วไม่ขึ้น" ให้ชัด
+--      สองเรื่องนี้แก้คนละทาง ถ้าไม่แยกจะเห็นเหมือนกันหมดว่า "ไม่ทำงาน"
+--   3) ถ้ายิงติดกันหลายครั้งแล้วเลขยังไม่ขยับ = เซิร์ฟเวอร์ปฏิเสธ ไม่ใช่เลเวลไม่พอ
+--      ข้อน่าจะเป็นเพราะยังอยู่ในสเตจ -> ให้ออกจากสเตจก่อนยิงใหม่หนึ่งครั้ง
+--      (ดัมป์มีแต่โค้ดฝั่ง client ตรงนี้จึงเป็นการกันไว้ ไม่ใช่ข้อเท็จจริงที่ยืนยันได้)
+local MAX_REBIRTH = 42
 local NEED_LEVEL_STEP = 25
 local REBIRTH_EVERY = 0.5
+local REBIRTH_WAIT = 1.5     -- รอให้เลขขยับหลังยิง ไม่รอนานเกินไป ไม่งั้นลูปจะค้าง
+local FAIL_LIMIT = 3        -- ยิงติดกันกี่ครั้งแล้วเลขยังไม่ขยับ ถือว่าเซิร์ฟเวอร์ปฏิเสธ
 
 local function canRebirth()
     local rebirth = getRebirth()
@@ -811,27 +826,68 @@ local function canRebirth()
     return level >= NEED_LEVEL_STEP * (rebirth + 1)
 end
 
+-- เลเวลที่ต้องใช้ของดับรีเบิร์ถัดไป -> nil = ถึงเพดานแล้ว
+local function needLevel()
+    local rebirth = getRebirth()
+    if not rebirth or rebirth >= MAX_REBIRTH then return nil end
+    return NEED_LEVEL_STEP * (rebirth + 1)
+end
+
 local rebirthEnabled = false
 local rebirthRunning = false
+local rebirthFails = 0      -- ยิงติดกันกี่ครั้งแล้วยังไม่ขึ้น (ใช้ตัดสินว่าจะออกจากสเตจไหม)
 
 local function rebirthLoop()
     while rebirthEnabled do
-        if canRebirth() then
-            local remote = TryRebirthRE or getRemote("Rebirth", "TryRebirthRE")
-            if remote then
-                TryRebirthRE = remote
-                local before = getRebirth()
-                pcall(function() remote:FireServer() end)
-                -- รอให้ตัวเลขขยับจริง กันยิงซ้ำถ้าเซิร์ฟเวอร์ช้า
-                local waited = 0
-                while waited < 3 and getRebirth() == before do
-                    task.wait(0.1)
-                    waited = waited + 0.1
-                end
+        -- ครอบทั้งรอบไว้ ถ้ามีอะไรพังจะได้ไม่ทำให้ลูปตายค้าง
+        pcall(function()
+            if not rebirthEnabled then return end
+            if not canRebirth() then
+                rebirthFails = 0
+                return
             end
-        end
+
+            -- ยิงซ้ำแล้วไม่ขึ้นหลายครั้ง = เซิร์ฟเวอร์ปฏิเสธ ไม่ใช่รอเลเวล
+            --   ออกจากสเตจก่อนหนึ่งครั้ง แล้วค่อยลองใหม่ในรอบถัดไป
+            if rebirthFails >= FAIL_LIMIT then
+                if player:GetAttribute("IntoFight") then
+                    exitFight(true, true)
+                    local waited = 0
+                    while waited < 5 and player:GetAttribute("IntoFight") do
+                        task.wait(0.05)
+                        waited = waited + 0.05
+                    end
+                end
+                -- กันลูปค้าง ถ้าออกจากสเตจไม่ได้ในเวลาที่กำหนด
+                if rebirthFails >= FAIL_LIMIT * 3 then
+                    rebirthFails = 0
+                end
+                return
+            end
+
+            local remote = TryRebirthRE or getRemote("Rebirth", "TryRebirthRE")
+            if not remote then return end
+            TryRebirthRE = remote
+
+            local before = getRebirth()
+            pcall(function() remote:FireServer() end)
+
+            -- รอให้เลขขยับจริง กันยิงซ้ำถ้าเซิร์ฟเวอร์ช้า
+            local waited = 0
+            while waited < REBIRTH_WAIT and getRebirth() == before do
+                task.wait(0.1)
+                waited = waited + 0.1
+            end
+
+            if getRebirth() == before then
+                rebirthFails = rebirthFails + 1
+            else
+                rebirthFails = 0
+            end
+        end)
         task.wait(REBIRTH_EVERY)
     end
+    -- คืนค่าให้แน่นอนเสมอ ไม่ว่าจะออกจากลูปด้วยเหตุใดก็ตาม
     rebirthRunning = false
 end
 
@@ -841,6 +897,12 @@ end
 local running = false
 local farmRunning = false
 local selectedStage = STAGE_NAMES[1]
+
+-- เก็บของเอง หรือปล่อยให้ ClaimedAllOreRE จัดการตอนออกจากสเตจ
+--   ปิดไว้ = เร็วกว่า เพราะไม่ต้องเดินเก็บทีละชิ้น
+--   ของที่เก็บเองไม่ทันจะถูก ClaimedAllOreRE เก็บให้ทั้งหมดอยู่ดี
+--     (StageUtils.lua:168  if a1 then ClaimedAllOreRE:FireServer() end)
+local collectManually = true
 
 -- รอจนกว่าเงื่อนไขจะเป็นจริง แต่ไม่เกิน timeout -> คืน true ถ้าสำเร็จ
 local function waitUntil(check, timeout, step)
@@ -880,6 +942,89 @@ local function notify(title, desc)
     end)
 end
 
+-- รอจนสถานะเปลี่ยนจริง แทนการนอนตายตัว
+--   ExitFight ตั้ง IntoFight = nil ให้เอง (StageUtils.lua:163) พอได้สัญญาณค่อยเข้าใหม่
+--   เดิมนอน 1.5 วิทุกรอบ = เสียเวลาเปล่าตอนที่จริง ๆ ใช้แค่ไม่กี่เฟรม
+local function waitOutOfFight(timeout)
+    return waitUntil(function() return not player:GetAttribute("IntoFight") end, timeout or 10, 0.02)
+end
+
+-- ============================================
+-- เกิดมอนรัว ในสเตจเดิม ไม่ต้องออก-เข้าใหม่ทุกครั้ง
+-- ============================================
+-- เกมมีระบบเกิดมอนซ้ำอยู่แล้ว แต่ตั้งไว้ 30 วินาที:
+--   FinishStage:198-203   หลังสเตจจบ -> IsEnemy=false, IsWaitRebirth=true,
+--                         RebirthTick = ServerTime + 30
+--   StageUtils:96-110     ทุก 1 วินาที ถ้า RebirthTick <= เวลาปัจจุบัน -> CreateStageEnemys ใหม่
+--   CreateStageEnemys:259 เกิดมอบชุดใหม่ = ยิง StageFinishedRF อีกครั้ง = ได้ของอีก 1 ชุด
+--                         ยิง EnemyHitBE ไปเรื่อย ๆ ก็ได้ของรัว ๆ ตามที่ต้องการ
+--
+-- ตัวเลข 30 วินาทีนั้นมาจาก workspace.ServerTime ซึ่งเป็น attribute ที่อ่านได้จากฝั่งเรา
+--   (StageUtils.lua:94 และ :203)
+--   เราเขียน attribute นี้ทับเองได้แบบ local ไม่กระทบเซิร์ฟเวอร์ (เซิร์ฟเวอร์คุมค่านี้เอง)
+--   พอเวลาที่เราเขียนเดินหน้ากว่า RebirthTick เกมก็เกิดมอนชุดต่อไปทันที
+--   เหลือแค่รอ heartbeat ของเกมรอบถัดไป ไม่ถึง 1 วินาที
+--
+--   ข้อควรระวัง: อย่าเอา attribute ที่เราเขียนไปต่อกับตัวเอง (บวกทีละรอบ = เพี้ยนเรื่อย ๆ)
+--   ต้องคำนวณจากเวลาจริงทุกครั้ง เวลาจริงคือ workspace:GetServerTimeNow()
+--   ซึ่งไม่โดนผลของการเขียน attribute แต่ละครั้ง (ต่างจาก GetAttribute("ServerTime"))
+local TIME_OFFSET = 45
+local boostRunning = false
+
+local function realServerTime()
+    local ok, now = pcall(function() return workspace:GetServerTimeNow() end)
+    if ok and type(now) == "number" then return now end
+    return tonumber(workspace:GetAttribute("ServerTime"))
+end
+
+-- เดินเวลาไปข้างหน้าทุก 0.2 วิ เพื่อให้เกมเข้าเงื่อน IsCanInto + RebirthTick ทันที
+local function startTimeBoost()
+    if boostRunning then return end
+    if not realServerTime() then return end  -- ไม่มี attribute นี้ = ข้ามไป ฟาร์มแบบเดิมก็ยังได้
+    boostRunning = true
+    task.spawn(function()
+        while boostRunning and running do
+            local now = realServerTime()
+            if now then
+                pcall(function() workspace:SetAttribute("ServerTime", now + TIME_OFFSET) end)
+            end
+            task.wait(0.2)
+        end
+        -- คืนค่าเวลาจริงก่อนเลิก ไม่งั้นตัวจับเวลาอื่นของเกมจะเพี้ยนค้างไว้
+        local back = realServerTime()
+        if back then
+            pcall(function() workspace:SetAttribute("ServerTime", back) end)
+        end
+        boostRunning = false
+    end)
+end
+
+local function stopTimeBoost()
+    boostRunning = false
+end
+
+-- ฆ่ามอนชุดนี้จนหมด = ยิงทุกเฟรม ไม่ใช่ทุก 0.2 วิ
+--   มอนเลือดโตแบบทวีคูณ ยิงช้ากว่านี้คือเสียเวลาในช่วงที่ต้องรอมอนตาย
+--     (ดูหัว killAllEnemies)
+--   ขอบเขตรอบ = มอนหมดจากโฟลเดอร์ 2 เฟรมติด หรือมีของตกแล้ว
+--     ไม่ใช่ "รอของตก" ล้วน ๆ เพราะถ้าเซิร์ฟเวอร์ไม่ยอมให้ของ จะค้างจนหมดเวลาทุกรอบ
+local function killWave(limit)
+    local mark = os.clock()
+    local empty = 0
+    while running do
+        local alive = countEnemies()
+        if alive > 0 then
+            empty = 0
+            killAllEnemies()
+        else
+            empty = empty + 1
+            if empty >= 2 or stageDone() then return true end
+        end
+        if os.clock() - mark > limit then return false end
+        task.wait()  -- ครั้งละเฟรม
+    end
+    return false
+end
 
 local function runRound()
     -- 1) รอจนฟื้นฟู (ถ้าตายอยู่ ไม่ต้องทำอะไรรอบนี้)
@@ -898,80 +1043,60 @@ local function runRound()
     --    ส่ง skipWarp = true เพราะเราไม่วาร์ปไปไหนแล้ว ไม่ต้องโดนลากกลับจุดเกิด
     if player:GetAttribute("IntoFight") then
         exitFight(true, true)
-        task.wait(1.5)
+        if not waitOutOfFight(10) then return end
     end
 
     -- 4) เข้าสเตจ (ตั้ง attribute อย่างเดียว ไม่วาร์ป)
+    --    StageManager ฟังแค่ attribute "StageID" เปลี่ยน (StageManager.client.lua:67)
+    --    ตั้งเป็น nil ก่อนเสมอ ไม่งั้น Roblox ไม่ยิง signal = ไม่เกิด StartFight
     enterStage(selectedStage)
 
     -- 5) รอมอนเกิด (สูงสุด 10 วิ)
     --    ถ้าไม่มีมอนเกิด = สเตจนี้เล่นไม่ได้ เช่น ยังไม่ปลดล็อก
     --    (CreateStageEnemys จะเตือน "缺少敌人点位" แล้ว return ถ้าไม่มี EnemyPoint)
-    if not waitUntil(function() return countEnemies() > 0 end, 10) then
+    if not waitUntil(function() return countEnemies() > 0 end, 10, 0.02) then
         if player:GetAttribute("IntoFight") then
             exitFight(false, true)
+            waitOutOfFight(10)
         end
-        task.wait(2)
         return
     end
 
-    -- 6) ฆ่ามอนวนจนของเริ่มตก = สเตจจบแล้ว
-    --    ยิงจากไหนก็ได้ EnemyHitBE ไม่เช็คระยะ (ดูหัว runRound)
-    --    ต้องยิงไปเรื่อย ๆ ไม่ใช่ยิงรอบเดียว เพราะ FinishStage
-    --    จะสร้างของต่อเมื่อทุกตัวใน EnemyTab ตายครบเท่านั้น
-    --    (ยิงครั้งเดียวแล้วไปรอของ = ค้างจน timeout เพราะมอนที่เหลือยังไม่ตาย)
-    --    timeout 60 วิ เผื่อเซิร์ฟเวอร์ไม่ยอมให้ของ (StageUtils.FinishStage
-    --    จะค้างที่ repeat task.wait() until FinishedOreTab ถ้าเซิร์ฟไม่ตอบ)
-    local done, waited = false, 0
-    local TIMEOUT = 60
-    while running and waited < TIMEOUT do
-        killAllEnemies()
-        if stageDone() then
-            done = true
-            break
+    -- 6) ฟาร์มรัว: ฆ่ารอบแรก เก็บของ แล้วรอมอนชุดถัดไปที่เกมเกิดให้เอง
+    --    เร่งเวลาไว้ตลอดช่วงนี้ เพื่อตัดรอ 30 วินาทีของเกมออก (ดูหัว startTimeBoost)
+    --    เกมเกิดรอบถัดไปให้เอง จึงได้ของรัว ๆ โดยไม่ต้องออกจากสเตจเลย
+    startTimeBoost()
+    while running do
+        if not killWave(30) then break end
+        if collectManually then
+            local picked = collectOres()
+            if picked == 0 and collectWarnMsg and not collectWarned then
+                notify("เก็บของไม่ได้", collectWarnMsg)
+            end
         end
-        task.wait(0.2)
-        waited = waited + 0.2
+        -- รอมอนชุดถัดไป ไม่เกิน 4 วิ
+        --   เกิด = ได้ของอีกชุด, ไม่เกิด = สเตจนี้เกิดซ้ำไม่ได้ -> ออกไปเข้าใหม่แทน
+        if not waitUntil(function() return countEnemies() > 0 end, 4, 0.02) then break end
     end
+    stopTimeBoost()
 
-    if not done then
-        -- หมดเวลาแล้วของยังไม่ตก = เซิร์ฟเวอร์ไม่ยอมให้ของ หรือ EnemyTab ถูกล้างจนยิงไม่เข้า
-        if player:GetAttribute("IntoFight") then
-            exitFight(false, true)
-        end
-        task.wait(2)
-        return
-    end
-
-    -- 7) เก็บของ: ขยายระยะ prompt แล้วกดจากที่ยืน เรียงจากราคาแพงสุดก่อน
-    --    ไม่ต้องวาร์ปไปหาของ และไม่ต้องย้ายโมดเดลใน OreCache ด้วย
-    local picked = collectOres()
-    task.wait(0.3)
-
-    if picked == 0 and collectWarnMsg then
-        notify("เก็บของไม่ได้", collectWarnMsg)
-        collectWarned = false
-        collectWarnMsg = nil
-    end
-
-    -- 8) ออกจากสเตจ -> ExitFight ยิง ClaimedAllOreRE ให้เซิร์ฟเวอร์
+    -- 7) ออกจากสเตจ -> ExitFight ยิง ClaimedAllOreRE ให้เซิร์ฟเวอร์
     --    แล้วล้างของที่เหลือทิ้ง (StageUtils.lua:189-197)
     --    ของที่เก็บเองไม่ทันจะถูก ClaimedAllOreRE เก็บให้ทั้งหมด
     --    skipWarp = true เพราะเราไม่วาร์ปไปไหน ไม่ต้องโดนลากกลับจุดเกิด
     if player:GetAttribute("IntoFight") then
         exitFight(true, true)
+        waitOutOfFight(10)
     end
-
-    -- 9) หน่วง 1 วิ ก่อนเริ่มรอบใหม่
-    task.wait(1)
 end
 
 local function farmLoop()
     while running do
         clearBlur()
         runRound()
-        -- กันหลุดลูกตอนผู้ใช้กดปิดสวิตช์ครั้งแรก (ยังไม่ได้ทำอะไรเลย)
-        if running then task.wait(0.5) end
+        if running then
+            task.wait(0.2)
+        end
     end
     farmRunning = false
 end
@@ -1011,6 +1136,10 @@ local function setRebirth(value)
     if rebirthEnabled and not rebirthRunning then
         rebirthRunning = true
         task.spawn(rebirthLoop)
+    end
+    -- เพิ่งรีเบิร์ธไป = ตัวนับความล้มเหลวเก่าใช้ไม่ได้แล้ว
+    if rebirthEnabled then
+        rebirthFails = 0
     end
 end
 
@@ -1062,7 +1191,14 @@ function AutoFarm.register(context)
             end,
         })
         farmSection:Toggle({Title = "เริ่ม Auto Farm", Desc = "ฟาร์มรอบอัตโนมัติ (ไม่วาร์ปไปหาของ)", Value = false, Callback = setRunning})
+        farmSection:Toggle({
+            Title = "เก็บของเอง",
+            Desc = "เปิด = เดินไปกดเก็บทีละชิ้น   ปิด = ปล่อยให้เกมเก็บให้ทั้งหมดตอนออกสเตจ (เร็วกว่า)",
+            Value = true,
+            Callback = function(v) collectManually = (v == true) end,
+        })
     end
+
 end
 
 return AutoFarm
