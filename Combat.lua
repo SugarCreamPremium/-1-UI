@@ -1,4 +1,4 @@
--- Version 12.15
+-- Version 10.28
 -- หมวดต่อสู้
 local Combat = {}
 
@@ -223,7 +223,7 @@ function Combat.register(context)
             Desc = "หน่วย stud วัดจากตัวละคร",
             Value = {Min = 5, Max = 500, Default = 25},
             Step = 1,
-            Callback = function(value) auraRange = math.clamp(value, 5, 80) end,
+            Callback = function(value) auraRange = math.clamp(value, 5, 500) end,
         })
         auraSection:Button({
             Title = "ยิงครั้งเดียว",
