@@ -1,4 +1,4 @@
--- Version 7.40
+-- Version 7.51
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -218,20 +218,18 @@ local function killAllEnemies()
             -- ต้องลบแถบเลือดก่อนยิง ไม่งั้นทุกครั้งที่ตีจะค้าง 0.15 วิ (ดูหัวฟังก์ชันด้านบน)
             stripEnemyHpBar(enemy)
 
-            -- ตัด HP ให้ 0 ก่อนยิง แล้วยิงทับอีกที
-            --   เดิมยิง damage = HP + 1 ซึ่งควรตายทันทีอยู่แล้ว แต่ถ้ามอนตัวไหน
-            --   เลือดไม่ใช่ NumberValue หรือถูกเซิร์ฟเวอร์แก้ค่าแข่งเรา ก็จะเหลือเลือด
-            --   การตัด HP เองทำให้ไม่ต้องพึ่ง damage ขนาดไหนเลย
-            --     (HPCTRL.DamageOnce -> UpdateHPValue: 0 - damage = ติดลบ = ตาย)
-            --     (HPCTRL.lua:88-101, 113-124)
-            -- damage ต่อไปนี้ไม่มีผลกับการตายแล้ว เพราะ HP ถูกตัดเป็น 0 ก่อน
-            --   แต่ยังต้องส่งค่าที่เป็นบวก เพราะ SuperLootManager คูณค่านี้กับโอกาสดรอป
-            --     (SuperLootManager.client.lua:78  ทำ p3.Damage = ...)
+            -- ยิงคำสั่งฆ่าตรง ๆ ไม่ต้องเขียนค่า HP เอง
+            --   เขียน hp.Value เองคือการไล่ HPValue.Changed ซึ่งคือจุดที่ทำให้ช้า
+            --     (HPCTRL.lua:36-50  HPValue.Changed:Connect)
+            --   ยิงแล้วเกมตัดเลือดให้เองด้วย damage = HP + 1 ซึ่งเกินพอดีอยู่แล้ว
+            --     (HPCTRL.DamageOnce -> UpdateHPValue: hp - (hp+1) = ติดลบ = ตาย
+            --      HPCTRL.lua:88-101, 113-124)
             local damage = 1
             local hp = enemy:FindFirstChild("HPValue")
             if hp and hp:IsA("NumberValue") then
-                pcall(function() hp.Value = 0 end)
+                damage = (tonumber(hp.Value) or 0) + 1
             end
+            if damage < 1 then damage = 1 end
             -- ต้องส่ง 3 อาร์กิวเมนต์: SuperLootManager.client.lua:78 ทำ p3.Damage = ...
             -- ถ้าส่งแค่ 2 จะ error ตรงนั้น
             pcall(function()
@@ -958,6 +956,7 @@ end
 -- ช่วงที่โตสุดคือช่วงที่แก้จากสคริปต์ไม่ได้ เพราะเป็นเวลารอเซิร์ฟเวอร์
 local ROUND_LOG_EVERY = 30
 local logDone = 0
+local logEnter = 0
 local logSpawn = 0
 local logKill = 0
 local logOre = 0
@@ -969,11 +968,11 @@ local function logRound()
     logDone = logDone + 1
     if logDone < ROUND_LOG_EVERY then return end
     local n = ROUND_LOG_EVERY
-    local total = (logSpawn + logKill + logOre + logPick + logExit) / n
+    local total = (logEnter + logSpawn + logKill + logOre + logPick + logExit) / n
     print(string.format(
-        "[AutoFarm] %d รอบ %.2f วิ/รอบ | เกิด %.2f | ฆ่า %.2f | รอของ %.2f | เก็บ %.2f | ออก %.2f",
-        n, total, logSpawn / n, logKill / n, logOre / n, logPick / n, logExit / n))
-    logDone, logSpawn, logKill, logOre, logPick, logExit = 0, 0, 0, 0, 0, 0
+        "[AutoFarm] %d รอบ %.2f วิ/รอบ | เข้าสเตจ %.2f | รอมอน %.2f | ฆ่า %.2f | รอของ %.2f | เก็บ %.2f | ออก %.2f",
+        n, total, logEnter / n, logSpawn / n, logKill / n, logOre / n, logPick / n, logExit / n))
+    logDone, logEnter, logSpawn, logKill, logOre, logPick, logExit = 0, 0, 0, 0, 0, 0, 0
 end
 
 -- หนึ่งรอบของการฟาร์ม คืนทุกทางที่ "รอบนี้ไม่สำเร็จ"
@@ -1125,6 +1124,7 @@ local killLogFrames = 0
 local killLogKill = 0
 local killLogWait = 0
 local killLogAlive = 0
+local killLogTrace = ""
 
 local function killStageEnemies(limit)
     local mark = os.clock()
@@ -1132,9 +1132,12 @@ local function killStageEnemies(limit)
     local frames = 0
     local startAlive = countEnemies()
     local deadAt = nil
+    local trace = ""
 
     while running do
         local alive = countEnemies()
+        -- เก็บลำดับจำนวนมอน 20 เฟรมแรก ไว้ดูว่ารูปทรงเป็นยังไง
+        if #trace < 40 then trace = trace .. alive .. " " end
         if alive > 0 then
             empty = 0
             killAllEnemies()
@@ -1145,14 +1148,18 @@ local function killStageEnemies(limit)
                 if KILL_LOG_EVERY > 0 then
                     killLogRounds = killLogRounds + 1
                     killLogAlive = killLogAlive + startAlive
+                    if killLogRounds == KILL_LOG_EVERY then
+                        killLogTrace = trace
+                    end
                     killLogFrames = killLogFrames + (deadAt and deadAt.frame or frames)
                     killLogKill = killLogKill + (deadAt and (deadAt.time - mark) or 0)
                     killLogWait = killLogWait + (os.clock() - (deadAt and deadAt.time or mark))
                     if killLogRounds >= KILL_LOG_EVERY then
                         local n = killLogRounds
                         print(string.format(
-                            "[AutoFarm] %d รอบ: มอน %.1f ตัว | ฆ่าจริง %.0f เฟรม / %.3f วิ | รอหลังมอนตาย %.3f วิ",
-                            n, killLogAlive / n, killLogFrames / n, killLogKill / n, killLogWait / n))
+                            "[AutoFarm] %d รอบ: มอน %.1f ตัว | ฆ่าจริง %.0f เฟรม / %.3f วิ | รอหลังมอนตาย %.3f วิ | รูปทรง %s",
+                            n, killLogAlive / n, killLogFrames / n, killLogKill / n, killLogWait / n, killLogTrace))
+                        killLogTrace = ""
                         killLogRounds, killLogAlive = 0, 0
                         killLogFrames, killLogKill, killLogWait = 0, 0, 0
                     end
@@ -1190,10 +1197,14 @@ local function runRound()
     -- 4) เข้าสเตจ (ตั้ง attribute อย่างเดียว ไม่วาร์ป)
     --    StageManager ฟังแค่ attribute "StageID" เปลี่ยน (StageManager.client.lua:67)
     --    ตั้งเป็น nil ก่อนเสมอ ไม่งั้น Roblox ไม่ยิง signal = ไม่เกิด StartFight
+    --    จับเวลาไว้ก่อน เพราะการตั้ง attribute เป็นตัวเรียก CreateStageEnemys
+    --    และตัวนั้น yield หลายจุด (WaitForChild + HP bar 0.15 วิต่อมอน)
+    --      (StageUtils.lua:263-268 -> EnemyCTRL._CreateBaseEnemy:192-260)
+    local tMark = os.clock()
     enterStage(selectedStage)
+    logEnter = logEnter + (os.clock() - tMark)
 
     -- 5) รอมอนเกิด (สูงสุด 10 วิ)
-    local tMark = os.clock()
     --    ถ้าไม่มีมอนเกิด = สเตจนี้เล่นไม่ได้ เช่น ยังไม่ปลดล็อก
     --    (CreateStageEnemys จะเตือน "缺少敌人点位" แล้ว return ถ้าไม่มี EnemyPoint)
     if not waitUntil(function() return countEnemies() > 0 end, 10, 0.01) then
