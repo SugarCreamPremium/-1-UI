@@ -1,4 +1,4 @@
--- Version 6.59
+-- Version 7.17
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -77,6 +77,7 @@ local function getRemote(folderName, remoteName)
 end
 
 local TryRebirthRE = getRemote("Rebirth", "TryRebirthRE")
+local UpdateAutoRebirthRE = getRemote("Rebirth", "UpdateAutoRebirthRE")
 
 -- ============================================
 -- รายชื่อสเตจ
@@ -182,7 +183,10 @@ local function killAllEnemies()
     local folder = getEnemyFolder()
     if not folder then return end
     for _, enemy in ipairs(folder:GetChildren()) do
-        if enemy:IsA("Model") then
+        -- ข้ามซากที่ตายแล้ว เกมหน่วงลบอีก 3 วินาที (EnemyCTRL.lua:222-232)
+        --   ยิงซ้ำแล้วไม่ได้อะไร แต่ HurtEnemy จะวนเดินทั้งซากทุกเฟรมตลอด 3 วินาทีนั้น
+        --   ยิงแต่ตัวที่ยังมีชีวิต = งานต่อเฟรมน้อยลงตามจำนวนซากที่ค้างอยู่
+        if enemy:IsA("Model") and not enemy:GetAttribute("Dead") then
             local hp = enemy:FindFirstChild("HPValue")
             local damage = 1
             if hp and hp:IsA("NumberValue") then
@@ -807,30 +811,26 @@ end
 -- ============================================
 -- Auto Rebirth
 -- ============================================
--- ปุ่มรีเบิร์ธของเกมเช็คแค่ 2 อย่าง แล้วยิงทันที (GuiUtils/RebirthGUI.lua:82-97)
---   1) Helper.CheckIsMax(Value)              -> ถึงเพดานแล้วไม่ยิง
---   2) Helper.GetNeedLevel(Value + 1) <= level -> ยิง
---     Rebirth/TryRebirthRE:FireServer()   ไม่มีอาร์กิวเมนต์
---   เกณฑ์เลเวล = 25 * ลำดับ  ตรงกับทุกแถวของ Config/Rebirth/Config.lua
---     ไล่จากแถวแรก NeedLevel 0 แล้ว +25 ทีละแถว จนแถวสุดท้าย 1025
---   ค่าที่อ่านมาตรง ๆ ได้คือ LocalPlayer.Eco.level และ LocalPlayer.Eco.rebirth
---     (RebirthGUI.lua:35-37  NumberValue ทั้งคู่ อ่านค่าได้สดโดยไม่ต้องยิง remote)
+-- เงื่อนไขเดียว: Lv. ถึงเกณฑ์ = ยิงทันที ไม่มีเงื่อนไขอื่นเลย
 --
--- เพดาน = 41  ไม่ใช่ 42
---   Config.lua มี 42 แถว (แถวแรกมี [0] ที่เหลือเรียงตามลำดับสุดท้าย NeedLevel 1025)
---     Helper.lua:3  u15 = getTableLegth(Config) - 1 = 42 - 1 = 41
---   CheckIsMax คืน true เมื่อ rebirth == 41 พอดี ช่วงนั้นห้ามยิงอีก
+--   เกณฑ์ = 25 * (rebirth + 1)  ตรงกับทุกแถวของ Config/Rebirth/Config.lua
+--     แถวแรก NeedLevel 0 แล้ว +25 ทีละแถว จนแถวสุดท้าย 1025
+--   อ่านค่าจาก LocalPlayer.Eco.level / .rebirth ซึ่งเป็น NumberValue อ่านสดได้
+--     (RebirthGUI.lua:35-37)
+--   เพดาน = 41  เพราะ Helper.lua:3  u15 = getTableLegth(Config) - 1 = 42 - 1
 --
--- วิธีทำให้ "ถึงเกณฑ์แล้วรีเบิร์ธทันที"
---   ออกจากสเตจก่อนยิงทุกครั้งที่ถึงเกณฑ์ แล้วยิงเดี๋ยวนั้น
---     เดิมยิงจากในสเตตั้งแต่แรก แล้วค่อยลองออกทีหลังเมื่อยิงไม่ขึ้นหลายครั้ง
---     ผลคือต้องรอเปล่าหลายสิบวินาทีก่อนจะรู้ว่าต้องออกก่อน
---   การออกจากสเตจครั้งเดียวต่อหนึ่งการรีเบิร์ธ ไม่กินเวลาฟาร์ม เพราะเกณฑ์นี้ผ่านบ่อย
---     (ExitFight(false, true) = ออกแบบไม่วาร์ป  StageUtils.lua:143-163)
+-- ยิงผ่าน 2 ทาง
+--   1) TryRebirthRE:FireServer() = ตัวเดียวกับที่ปุ่มของเกมยิง ไม่มีอาร์กิวเมนต์
+--      (GuiUtils/RebirthGUI.lua:82-97)
+--   2) UpdateAutoRebirthRE:FireServer(true) = สั่งเปิดรีเบิร์ธอัตโนมัติของเกมเอง
+--      ให้เซิร์ฟเวอร์เป็นคนตัดสินใจรีเบิร์ทแทน ไม่ต้องพึ่งลูปข้างล่างเลย
+--      Remote ตัวนี้มีอยู่จริงใน ReplicatedStorage.Remote.Rebirth
+--        แต่ค้นทั้งดัมป์แล้วไม่มีสคริปต์ฝั่ง client ไหนเรียกมันเลย
+--        (ของเดิมอ้างถึงแค่ RebirthGUI.lua:27 ที่ TryRebirthRE)
+--      ยิงครั้งเดียวตอนเปิดสวิตช์ ถ้ายิงซ้ำทุกรอบแล้วมันเป็น toggle จะสลับไปมาจนเปิด/ปิดเอง
 local MAX_REBIRTH = 41
 local NEED_LEVEL_STEP = 25
-local REBIRTH_EVERY = 0.5      -- รอบล่าสุดแล้วเช็คเงื่อนไขใหม่
-local REBIRTH_WAIT = 0.8      -- รอให้เลขขยับหลังยิง สั้นพอ ไม่งั้นลูปจะค้าง
+local REBIRTH_EVERY = 0.5      -- รอบล่าสุดแล้วเช็ค Lv. ใหม่
 
 local function canRebirth()
     local rebirth = getRebirth()
@@ -840,16 +840,12 @@ local function canRebirth()
     return level >= NEED_LEVEL_STEP * (rebirth + 1)
 end
 
--- ออกจากสเตจแล้วรอสัญญาณว่าออกจริง -> คืน true ถ้าออกได้
-local function leaveStage(timeout)
-    if not player:GetAttribute("IntoFight") then return true end
-    exitFight(false, true)
-    local waited = 0
-    while waited < (timeout or 5) and player:GetAttribute("IntoFight") do
-        task.wait(0.02)
-        waited = waited + 0.02
-    end
-    return not player:GetAttribute("IntoFight")
+-- เปิดระบบรีเบิร์ธอัตโนมัติของเกม ยิงครั้งเดียวพอ
+local function enableGameAutoRebirth()
+    local remote = UpdateAutoRebirthRE or getRemote("Rebirth", "UpdateAutoRebirthRE")
+    if not remote then return end
+    UpdateAutoRebirthRE = remote
+    pcall(function() remote:FireServer(true) end)
 end
 
 local rebirthEnabled = false
@@ -857,30 +853,13 @@ local rebirthRunning = false
 
 local function rebirthLoop()
     while rebirthEnabled do
-        -- ครอบทั้งรอบไว้ ถ้ามีอะไรพังจะได้ไม่ทำให้ลูปตายค้าง
-        --   เดิม error ครั้งเดียวก็ทำให้ coroutine ตาย แล้ว rebirthRunning ค้างเป็น true
-        --   ตั้งแต่นั้นสวิตช์จะเปิดลูปใหม่ไม่ได้อีก
-        pcall(function()
-            if not rebirthEnabled then return end
-            if not canRebirth() then return end
-
-            -- ออกจากสเตจก่อน แล้วค่อยยิงทันทีในรอบเดียวกัน
-            leaveStage(5)
-
+        if canRebirth() then
             local remote = TryRebirthRE or getRemote("Rebirth", "TryRebirthRE")
-            if not remote then return end
-            TryRebirthRE = remote
-
-            local before = getRebirth()
-            pcall(function() remote:FireServer() end)
-
-            -- รอให้เลขขยับจริง กันยิงซ้ำถ้าเซิร์ฟเวอร์ช้า
-            local waited = 0
-            while waited < REBIRTH_WAIT and getRebirth() == before do
-                task.wait(0.05)
-                waited = waited + 0.05
+            if remote then
+                TryRebirthRE = remote
+                pcall(function() remote:FireServer() end)
             end
-        end)
+        end
         task.wait(REBIRTH_EVERY)
     end
     -- คืนค่าให้แน่นอนเสมอ ไม่ว่าจะออกจากลูปด้วยเหตุใดก็ตาม
@@ -904,6 +883,32 @@ local function waitUntil(check, timeout, step)
         waited = waited + (step or 0.25)
     end
     return false
+end
+
+-- ============================================
+-- จับเวลารอบฟาร์ม
+-- ============================================
+-- พิมพ์ค่าเฉลี่ยต่อช่วงลงคอนโซลของ executor (ไม่ขึ้นบน UI)
+--   ตั้ง ROUND_LOG_EVERY = 0 ถ้าไม่อยากเห็น
+-- จุดที่วัด = 4 ช่วงที่รอบหนึ่ง ๆ ใช้เวลา
+--   รอมอน+ฆ่า+รอของตก / เก็บของ / รอออกจากสเตจ
+-- ช่วงที่โตสุดคือช่วงที่แก้จากสคริปต์ไม่ได้ เพราะเป็นเวลารอเซิร์ฟเวอร์
+local ROUND_LOG_EVERY = 30
+local logDone = 0
+local logSpawn = 0
+local logOre = 0
+local logPick = 0
+
+local function logRound()
+    if ROUND_LOG_EVERY <= 0 then return end
+    logDone = logDone + 1
+    if logDone < ROUND_LOG_EVERY then return end
+    local n = ROUND_LOG_EVERY
+    local total = (logSpawn + logOre + logPick) / n
+    print(string.format(
+        "[AutoFarm] %d รอบ เฉลี่ย %.2f วิ/รอบ | รอมอน+ฆ่า+รอของ %.2f | เก็บของ %.2f | ออกจากสเตจ %.2f",
+        n, total, logSpawn / n, logOre / n, logPick / n))
+    logDone, logSpawn, logOre, logPick = 0, 0, 0, 0
 end
 
 -- หนึ่งรอบของการฟาร์ม คืนทุกทางที่ "รอบนี้ไม่สำเร็จ"
@@ -1022,6 +1027,7 @@ local function runRound()
     enterStage(selectedStage)
 
     -- 5) รอมอนเกิด (สูงสุด 10 วิ)
+    local tMark = os.clock()
     --    ถ้าไม่มีมอนเกิด = สเตจนี้เล่นไม่ได้ เช่น ยังไม่ปลดล็อก
     --    (CreateStageEnemys จะเตือน "缺少敌人点位" แล้ว return ถ้าไม่มี EnemyPoint)
     if not waitUntil(function() return countEnemies() > 0 end, 10, 0.01) then
@@ -1031,6 +1037,9 @@ local function runRound()
         end
         return
     end
+
+    logSpawn = logSpawn + (os.clock() - tMark)
+    tMark = os.clock()
 
     -- 6) ฆ่ามอนทั้งเซตจนหมด
     --    ต้องยิงไปเรื่อย ๆ ไม่ใช่ยิงรอบเดียว เพราะ FinishStage
@@ -1050,6 +1059,8 @@ local function runRound()
     --      StageUtils.lua:212      OreUtils.CreateOres)
     --   ถ้าไม่รอ จะไปเก็บตอนที่ยังไม่มีของเลย = เสียของทั้งรอบนั้น
     waitUntil(function() return stageDone() end, 3, 0.02)
+    logSpawn = logSpawn + (os.clock() - tMark)
+    tMark = os.clock()
 
     -- 7) เก็บของทุกชิ้นด้วยตัวเองก่อนเสมอ
     --    ของเข้ากระเป๋าทันทีที่กดปุ่ม Collect ไม่มีขั้นตอนยืนยันทีหลัง
@@ -1057,6 +1068,8 @@ local function runRound()
     --    และเก็บได้แค่ทีละจำนวนช่องที่อัป OrePack ไว้ ถ้าช่องเต็มเกมจะไม่เก็บให้
     --      (OreUtils.lua:60-62  if GetMaxNum("OrePack") <= v1 then showMessage("Pack is full.") return end)
     local picked = collectOres()
+    logOre = logOre + (os.clock() - tMark)
+    tMark = os.clock()
     if picked == 0 and collectWarnMsg and not collectWarned then
         notify("เก็บของไม่ได้", collectWarnMsg)
     end
@@ -1073,6 +1086,8 @@ local function runRound()
         exitFight(true, true)
         waitOutOfFight(10)
     end
+    logPick = logPick + (os.clock() - tMark)
+    logRound()
 end
 
 local function farmLoop()
@@ -1119,6 +1134,9 @@ end
 local function setRebirth(value)
     rebirthEnabled = value == true
     if rebirthEnabled and not rebirthRunning then
+        -- ให้เซิร์ฟเวอร์รีเบิร์ธเองก่อนเลย
+        --   ถ้าตัวนี้ใช้ได้ ลูปข้างล่างจะไม่ต้องทำอะไรเลยก็รีเบิร์ทได้เอง
+        enableGameAutoRebirth()
         rebirthRunning = true
         task.spawn(rebirthLoop)
     end
