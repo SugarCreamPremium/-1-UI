@@ -1,4 +1,4 @@
--- Version 7.17
+-- Version 7.23
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -593,19 +593,43 @@ local function collectOres()
         return getOrePrice(a.Name) > getOrePrice(b.Name)
     end)
 
-    -- 2) เก็บทีละชิ้นจากแพงสุด
-    --    ไม่ต้องดึงของมาก่อนแล้ว (เดิมเป็นขั้นตอนแยก) เพราะ pickOre ขยายระยะ prompt ให้เอง
-    --    และย้ายของต่อก็เหลือแค่ทางสำรอง ตอนนี้เกิดแค่กรณีที่เอนจินคุมระยะตัวเอง
-    local picked = 0
-    for _, ore in ipairs(ores) do
-        local count, max = getPack()
-        if count and max and count >= max then break end
+    -- 2) เก็บทุกชิ้นพร้อมกัน คนละ coroutine
+    --
+    --    ทำไมต้องพร้อมกัน = callback ของเกมยิง GetOreRF:InvokeServer(uuid) ต่อชิ้น
+    --      (OreUtils.lua:71) ซึ่ง InvokeServer จะ yield ลูปเราไว้จนกว่าเซิร์ฟเวอร์ตอบ
+    --      เดิมเก็บทีละชิ้น = N ชิ้น = N รอบเดินทางเรียงกัน (ของ 6 ชิ้นกิน 0.6 วิ)
+    --      ยิงพร้อมกัน = ทุกชิ้นรอเชิร์ฟเวอร์คนละตัว ทบกันในเวลาเดียวกัน
+    --
+    --    จำนวนที่เก็บได้ก็ต้องลิมิตตามช่องที่เหลือในกระเป๋า
+    --      เพราะตอนนี้ไม่ได้เช็คก่อนเก็บทีละชิ้นแล้ว ต้องคิดจำนวนครั้งเดียวตอนต้น
+    --        (OreUtils.lua:60-62  กระเป๋าเต็มเกมจะไม่เก็บให้ ไม่งั้นรอเปล่า 0.6 วิ ต่อชิ้น)
+    local count, max = getPack()
+    local limit = #ores
+    if count and max then
+        local room = max - count
+        if room <= 0 then return 0 end
+        if room < limit then limit = room end
+    end
 
-        if pickOre(ore) then
-            picked = picked + 1
-        else
-            break
-        end
+    local done = 0
+    local picked = 0
+    local finished = 0
+    for i = 1, limit do
+        task.spawn(function()
+            local okPick = pickOre(ores[i])
+            finished = finished + 1
+            if okPick then picked = picked + 1 end
+        end)
+        done = done + 1
+    end
+
+    -- ต้องรอทุกชิ้นเสร็จก่อนออกจากสเตจ
+    --   เพราะ ExitFight เรียก OreUtils.CleanOres() ซึ่งลบของที่ยังอยู่บนพื้นทิ้งทั้งหมด
+    --     (OreUtils.lua:95-98) ของที่ยังไม่เข้ากระเป๋าตอนนั้น = ของหายถาวร
+    local waited = 0
+    while finished < done and waited < 5 do
+        task.wait(0.02)
+        waited = waited + 0.02
     end
 
     if picked == 0 and #ores > 0 and not collectWarned then
@@ -890,25 +914,27 @@ end
 -- ============================================
 -- พิมพ์ค่าเฉลี่ยต่อช่วงลงคอนโซลของ executor (ไม่ขึ้นบน UI)
 --   ตั้ง ROUND_LOG_EVERY = 0 ถ้าไม่อยากเห็น
--- จุดที่วัด = 4 ช่วงที่รอบหนึ่ง ๆ ใช้เวลา
---   รอมอน+ฆ่า+รอของตก / เก็บของ / รอออกจากสเตจ
+-- จุดที่วัด = 5 ช่วงที่รอบหนึ่ง ๆ ใช้เวลา
+--   เกิด / ฆ่า / รอของตก / เก็บของ / ออกจากสเตจ
 -- ช่วงที่โตสุดคือช่วงที่แก้จากสคริปต์ไม่ได้ เพราะเป็นเวลารอเซิร์ฟเวอร์
 local ROUND_LOG_EVERY = 30
 local logDone = 0
 local logSpawn = 0
+local logKill = 0
 local logOre = 0
 local logPick = 0
+local logExit = 0
 
 local function logRound()
     if ROUND_LOG_EVERY <= 0 then return end
     logDone = logDone + 1
     if logDone < ROUND_LOG_EVERY then return end
     local n = ROUND_LOG_EVERY
-    local total = (logSpawn + logOre + logPick) / n
+    local total = (logSpawn + logKill + logOre + logPick + logExit) / n
     print(string.format(
-        "[AutoFarm] %d รอบ เฉลี่ย %.2f วิ/รอบ | รอมอน+ฆ่า+รอของ %.2f | เก็บของ %.2f | ออกจากสเตจ %.2f",
-        n, total, logSpawn / n, logOre / n, logPick / n))
-    logDone, logSpawn, logOre, logPick = 0, 0, 0, 0
+        "[AutoFarm] %d รอบ %.2f วิ/รอบ | เกิด %.2f | ฆ่า %.2f | รอของ %.2f | เก็บ %.2f | ออก %.2f",
+        n, total, logSpawn / n, logKill / n, logOre / n, logPick / n, logExit / n))
+    logDone, logSpawn, logKill, logOre, logPick, logExit = 0, 0, 0, 0, 0, 0
 end
 
 -- หนึ่งรอบของการฟาร์ม คืนทุกทางที่ "รอบนี้ไม่สำเร็จ"
@@ -1058,8 +1084,12 @@ local function runRound()
     --     (StageUtils.lua:206-208  repeat task.wait() until FinishedOreTab
     --      StageUtils.lua:212      OreUtils.CreateOres)
     --   ถ้าไม่รอ จะไปเก็บตอนที่ยังไม่มีของเลย = เสียของทั้งรอบนั้น
+    logKill = logKill + (os.clock() - tMark)
+    tMark = os.clock()
+
+    --    ของยังไม่ตกทันทีที่มอนตาย ต้องรอสัญญาณจาก FinishStage
     waitUntil(function() return stageDone() end, 3, 0.02)
-    logSpawn = logSpawn + (os.clock() - tMark)
+    logOre = logOre + (os.clock() - tMark)
     tMark = os.clock()
 
     -- 7) เก็บของทุกชิ้นด้วยตัวเองก่อนเสมอ
@@ -1068,7 +1098,7 @@ local function runRound()
     --    และเก็บได้แค่ทีละจำนวนช่องที่อัป OrePack ไว้ ถ้าช่องเต็มเกมจะไม่เก็บให้
     --      (OreUtils.lua:60-62  if GetMaxNum("OrePack") <= v1 then showMessage("Pack is full.") return end)
     local picked = collectOres()
-    logOre = logOre + (os.clock() - tMark)
+    logPick = logPick + (os.clock() - tMark)
     tMark = os.clock()
     if picked == 0 and collectWarnMsg and not collectWarned then
         notify("เก็บของไม่ได้", collectWarnMsg)
@@ -1086,7 +1116,7 @@ local function runRound()
         exitFight(true, true)
         waitOutOfFight(10)
     end
-    logPick = logPick + (os.clock() - tMark)
+    logExit = logExit + (os.clock() - tMark)
     logRound()
 end
 
