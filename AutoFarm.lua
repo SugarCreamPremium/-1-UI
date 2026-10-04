@@ -1,4 +1,4 @@
--- Version 9.54
+-- Version 10.11
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -636,11 +636,6 @@ end
 --   (OreUtils.lua:62-66  if UpgradeData.GetMaxNum("OrePack") <= v1 then ... return end)
 --   แปลว่า prompt ยัง Enabled อยู่ = ยิงซ้ำก็ไม่มีอะไรเกิดขึ้น
 --   -> ต้องเช็คจำนวนในกระเป๋าก่อนยิงทุกชิ้น ไม่งั้นจะยิงเปล่า 1.5 วิ ทีละชิ้นจนครบ
---
--- ข้อความเตือนว่าเก็บของไม่ได้ ส่งออกไปโชว์ทีเดียว ไม่งั้นจะขึ้นทุกรอบ
-local collectWarned = false
-local collectWarnMsg = nil
-
 local function collectOres()
     local cache = getOreCache()
     if not cache then return 0 end
@@ -695,13 +690,6 @@ local function collectOres()
     while finished < done and waited < 5 do
         task.wait(0.02)
         waited = waited + 0.02
-    end
-
-    if picked == 0 and #ores > 0 and not collectWarned then
-        collectWarned = true
-        collectWarnMsg = fireError
-            and ("เก็บของไม่ได้: " .. tostring(fireError))
-            or "เก็บของไม่ได้ ทั้งที่ของตกแล้ว (ลองสลับ executor ดู)"
     end
 
     return picked
@@ -897,34 +885,22 @@ local function trainLoop()
     trainRunning = false
 end
 
--- วางไว้ตรงนี้ (ก่อน Auto Rebirth) เพราะ Lua มองไม่เห็น local function ที่ประกาศ "หลัง" จุดที่เรียก
---   ถ้าแจ้งเตือนอยู่ท้ายไฟล์ ลูปรีเบิร์ธจะเรียก notify แล้วได้ nil = error
---   (เหมือนเรื่อง task.spawn(trainLoop) ที่เคยตายตอนประกาศไปทีหลัง)
--- ============================================
--- แจ้งเตือนผู้ใช้
--- ============================================
--- ต้องอยู่ระดับ module ไม่ใช่ใน register เพราะ runRound จะเรียกใช้ด้วย
---   local function ใน register มองจากข้างนอกไม่เห็น (upvalue ไม่หลุดออกมา)
---   local function ใน register มองจากข้างนอกไม่เห็น (upvalue ไม่หลุดออกมา)
-local windUI = nil
-
-local function notify(title, desc)
-    if not windUI then return end
-    pcall(function()
-        windUI:Notify({Title = title, Content = desc, Duration = 3})
-    end)
-end
-
 -- ============================================
 -- Auto Rebirth
 -- ============================================
 -- เงื่อนไขเดียว: Lv. ถึงเกณฑ์ = ยิงทันที ไม่มีเงื่อนไขอื่นเลย
 --   เช็คทุกเฟรม ไม่ใช่ทุก 0.5 วิ เพื่อให้ยิงในเฟรมเดียวกับที่ Lv. เพิ่งข้ามเกณฑ์
 --
---   เกณฑ์ = 25 * (rebirth + 1)  ตรงกับทุกแถวของ Config/Rebirth/Config.lua
---     แถวแรก NeedLevel 0 แล้ว +25 ทีละแถว จนแถวสุดท้าย 1025
---     ปุ่มของเกมเช็คแบบเดียวกันเป๊ะ: GetNeedLevel(rebirth + 1) <= level.Value
---       (RebirthGUI.lua:52)  -> จุดที่เราอ่านมาคำนวณเงื่อนไขตรงกัน
+--   เกณฑ์ไม่ใช่สูตรคงที่ แต่คือค่าในตารางของเกมเอง
+--     เกมอ่านจาก Config/Rebirth/Config.lua แถว rebirth + 1
+--       (Helper.lua:45-51  GetNeedLevel -> Config[a1].NeedLevel)
+--     และปุ่มเช็คแบบเดียวกันเป๊ะ: GetNeedLevel(rebirth + 1) <= level.Value
+--       (RebirthGUI.lua:52)
+--     ในตัวดัมป์ที่มีตอนนี้ แถวนั้น = 25 ทีละชั้น รอบที่ 15 ก็คือ 375
+--       แต่ถ้าเกมอัปเวอร์ชันแล้วแก้ตัวเลข เราจะเพี้ยนทันที
+--       (เคยเจอรอบที่ 15 ของจริงใช้แค่ 335 ซึ่งไม่มีในตารางนี้)
+--     = ต้องอ่านตารางสด ๆ ไม่ใช่คัดลอกมาคำนวณ (ดู getNeedLevel ข้างล่าง)
+--
 --   อ่านค่าจาก LocalPlayer.Eco.level / .rebirth ซึ่งเป็น NumberValue อ่านสดได้
 --     (RebirthGUI.lua:28-30  LocalPlayer:WaitForChild("Eco") -> rebirth / level)
 --   เพดาน = 41  เพราะ Helper.lua:3  u15 = getTableLegth(Config) - 1
@@ -951,6 +927,56 @@ local NEED_LEVEL_STEP = 25
 --   Eco.rebirth จะเปลี่ยนทันที แล้วเงื่อนไขข้างบนจะพาไปยิงรอบใหม่เองทันที
 local REBIRTH_RETRY = 1.0
 
+-- ============================================
+-- อ่าน "เลเวลที่ต้องใช้" ของรอบรีเบิร์ธถัดไป
+-- ============================================
+-- วิธีที่ 1 (ที่ถูกต้องที่สุด): require ตารางของเกมมาอ่านสด
+--   Config/Rebirth/Config.lua เป็นโมดูลข้อมูลล้วน ไม่มีฟังก์ชันข้างใน
+--     ต่างจาก CommunicationUtils ที่ไฟล์หัวห้าม require
+--       (RequireUtils ที่ require แล้วเรียกข้างใน เช่น TryGetBindableEvent จะพัง
+--        เพราะ executor บางตัวคืนตารางเปล่ามาให้)
+--   แต่โมดูลนี้ require มาได้ก็คือตัวเลขจริงของเกมในเวอร์ชันที่กำลังเล่น
+--
+--   เช็คผลลัพธ์ก่อนใช้เสมอ เพราะ executor บางตัวก็คืน {} มาให้แม้โมดูลนี้จะไม่พัง
+--     ต้องเห็นแถว [1].NeedLevel เป็นตัวเลขถึงถือว่าใช้ได้ ไม่งั้นถือว่า require ไม่ผ่าน
+--   require ครั้งเดียวแล้วจำไว้ ไม่ต้อง require ทุกเฟรม
+local liveRebirthConfig = nil
+
+local function getLiveRebirthConfig()
+    if liveRebirthConfig then return liveRebirthConfig end
+    local ok, cfg = pcall(function()
+        local folder = ReplicatedStorage:WaitForChild("Config", 5)
+        local rebirth = folder and folder:WaitForChild("Rebirth", 5)
+        local config = rebirth and rebirth:WaitForChild("Config", 5)
+        if not config then return nil end
+        return require(config)
+    end)
+    if ok and type(cfg) == "table" then
+        local first = cfg[1]
+        if type(first) == "table" and tonumber(first.NeedLevel) ~= nil then
+            liveRebirthConfig = cfg
+        end
+    end
+    return liveRebirthConfig
+end
+
+-- คืนเลเวลขั้นต่ำของรอบถัดไป หรือ nil ถ้ายังอ่านค่าไม่ได้เลย
+local function getNeedLevel()
+    local rebirth = getRebirth()
+    if rebirth == nil then return nil end
+    local cfg = getLiveRebirthConfig()
+    if cfg then
+        local row = cfg[rebirth + 1]
+        if type(row) == "table" then
+            local need = tonumber(row.NeedLevel)
+            if need then return need end
+        end
+    end
+    -- สำรอง: สูตร 25 * (rebirth + 1) ซึ่งตรงกับทุกแถวของตารางในดัมป์
+    --   ใช้เมื่อ executor ไม่ให้ require (ได้ตารางเปล่า) เท่านั้น
+    return NEED_LEVEL_STEP * (rebirth + 1)
+end
+
 local function canRebirth()
     local rebirth = getRebirth()
     local level = getLevel()
@@ -958,7 +984,9 @@ local function canRebirth()
     if rebirth >= MAX_REBIRTH then return false end
     -- ตายอยู่ก็ยังยิงไม่ได้ ไม่งั้นจะได้ยิงเปล่า ๆ ทุกวินาทีตอนตาย
     if player:GetAttribute("Dead") then return false end
-    return level >= NEED_LEVEL_STEP * (rebirth + 1)
+    local need = getNeedLevel()
+    if not need then return false end
+    return level >= need
 end
 
 -- ทางที่ 1: ยิง remote ตรง ๆ
@@ -1016,7 +1044,6 @@ local lastFireTime = 0
 local fireMethod = 2
 
 local function rebirthLoop(token)
-    local lastNotified = nil
     while rebirthEnabled and token == rebirthToken do
         local rebirth = getRebirth()
         if canRebirth() then
@@ -1036,12 +1063,6 @@ local function rebirthLoop(token)
             -- เงื่อนไขไม่ผ่าน = รอบใหม่พร้อมยิงทันทีที่เลเวลข้ามเกณฑ์ (ไม่ต้องรอ cooldown ค้าง)
             lastFireRebirth = nil
         end
-
-        -- แจ้งเฉพาะตอนที่ rebirth เพิ่งขึ้นจริง ไม่ยิงซ้ำทุกครั้งที่เลขเดิม
-        if rebirth ~= nil and lastNotified ~= nil and rebirth > lastNotified then
-            notify("Rebirth แล้ว", "Rebirth ครั้งที่ " .. tostring(rebirth))
-        end
-        if rebirth ~= nil then lastNotified = rebirth end
 
         task.wait() -- ครั้งละเฟรม เพื่อให้ยิงทันทีที่เลเวลข้ามเกณฑ์
     end
@@ -1346,9 +1367,6 @@ local function runRound()
     --    และเก็บได้แค่ทีละจำนวนช่องที่อัป OrePack ไว้ ถ้าช่องเต็มเกมจะไม่เก็บให้
     --      (OreUtils.lua:60-62  if GetMaxNum("OrePack") <= v1 then showMessage("Pack is full.") return end)
     local picked = collectOres()
-    if picked == 0 and collectWarnMsg and not collectWarned then
-        notify("เก็บของไม่ได้", collectWarnMsg)
-    end
 
     -- 8) บอกเซิร์ฟเวอร์ว่า "กลับมาแล้ว" แล้วเข้าสเตจใหม่ในรอบถัดไป
     --    ส่ง claimOres = true คือยิง Stage.ClaimedAllOreRE ให้เซิร์ฟเวอร์รู้ว่ารอบนี้จบแล้ว
@@ -1395,7 +1413,6 @@ local function setTrain(value)
             trainRunning = true
             -- ค้างกันเบลอไว้ตลอดช่วงที่ Auto Train เปิดอยู่
             startBlurGuard()
-            pcall(function() notify("Auto Train เริ่มทำงาน", "จะใช้จุดเทรนที่ดีที่สุด") end)
             task.spawn(trainLoop)
         end
     else
@@ -1434,7 +1451,6 @@ end
 -- ============================================
 function AutoFarm.register(context)
     local tab = context.Tab
-    windUI = context.WindUI
     if not tab then return end
 
     local names = getStageNames()
@@ -1455,11 +1471,11 @@ function AutoFarm.register(context)
 
     local trainSection = tab:Section({Title = "Train", Opened = true})
     if trainSection then
-        trainSection:Toggle({Title = "เริ่ม Auto Train", Desc = "ฟาร์ม x100 โดยไม่ต้องไปยืนตรงจุด Train", Value = false, Callback = setTrain})
+        trainSection:Toggle({Title = "Auto Train", Desc = "ฟาร์ม x100 โดยไม่ต้องไปยืนตรงจุด Train", Value = false, Callback = setTrain})
         trainSection:Toggle({Title = "Auto Rebirth", Desc = "รีเบิร์ธอัตโนมัติเมื่อถึงเกณฑ์", Value = false, Callback = setRebirth})
     end
 
-    local farmSection = tab:Section({Title = "Farm", Opened = true})
+    local farmSection = tab:Section({Title = "Dungeon", Opened = true})
     if farmSection then
         farmSection:Dropdown({
             Title = "เลือก Stage",
@@ -1479,7 +1495,7 @@ function AutoFarm.register(context)
                 end
             end,
         })
-        farmSection:Toggle({Title = "เริ่ม Auto Farm", Desc = "ฟาร์มรอบอัตโนมัติ (ไม่วาร์ปไปหาของ)", Value = false, Callback = setRunning})
+        farmSection:Toggle({Title = "Auto Farm", Desc = "ฟาร์มรอบอัตโนมัติ (ไม่วาร์ปไปหาของ)", Value = false, Callback = setRunning})
     end
 
 end
