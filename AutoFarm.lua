@@ -1,4 +1,4 @@
--- Version 8.22
+-- Version 8.50
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -1172,6 +1172,20 @@ local function hideStageUI()
             local boss = top:FindFirstChild("BossHP")
             if boss and boss.Visible then
                 pcall(function() boss.Visible = false end)
+            end
+        end
+        if hud then
+            local race = hud:FindFirstChild("Race")
+            if race and race.Visible == false then
+                pcall(function() race.Visible = true end)
+            end
+            local rightTop = hud:FindFirstChild("RightTop")
+            local rtBtn = rightTop and rightTop:FindFirstChild("Button")
+            if rtBtn then
+                local rtRace = rtBtn:FindFirstChild("Race")
+                if rtRace and rtRace.Visible == false then
+                    pcall(function() rtRace.Visible = true end)
+                end
             end
         end
     end)
