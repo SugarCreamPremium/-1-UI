@@ -1,4 +1,4 @@
--- Version 8.04
+-- Version 8.22
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -1069,18 +1069,110 @@ local function hideStageUI()
     uiHidden = true
 
     local RunService = game:GetService("RunService")
+    local TweenService = game:GetService("TweenService")
+    local CollectionService = game:GetService("CollectionService")
+    local Workspace = game:GetService("Workspace")
+
+    local function killSpeedVfx()
+        local char = player.Character
+        if not char then return end
+        for _, obj in ipairs(char:GetDescendants()) do
+            if obj:IsA("Model") then
+                local ok = pcall(function() return obj:HasTag("SKILLVFX") end)
+                if ok and obj:HasTag("SKILLVFX") then
+                    pcall(function() obj:Destroy() end)
+                end
+            end
+        end
+        for _, m in ipairs(CollectionService:GetTagged("SKILLVFX")) do
+            if m:IsDescendantOf(char) then
+                pcall(function() m:Destroy() end)
+            end
+        end
+    end
+
+    local function killHpBallVfx()
+        for _, obj in ipairs(Workspace:GetDescendants()) do
+            if obj:IsA("Attachment") or obj:IsA("ParticleEmitter") or obj:IsA("Light") or obj:IsA("Beam") then
+                local par = obj.Parent
+                if par and par.Name == "HPBallVFX" then
+                    pcall(function() par:Destroy() end)
+                end
+            end
+            if obj.Name == "HPBallVFX" and obj:IsA("Model") then
+                pcall(function() obj:Destroy() end)
+            end
+        end
+    end
+
+    local hookedTween = false
+    local function hookTweens()
+        if hookedTween then return end
+        hookedTween = true
+        local mt = getrawmetatable(TweenService)
+        if not mt then return end
+        local old = mt.__namecall
+        if not old then return end
+        setreadonly(mt, false)
+        mt.__namecall = function(self, ...)
+            local method = getnamecallmethod()
+            if method == "Create" then
+                local args = { ... }
+                if args[3] and type(args[3]) == "table" then
+                    local goal = args[3]
+                    if goal.FieldOfView ~= nil then
+                        goal.FieldOfView = nil
+                    end
+                end
+            end
+            return old(self, ...)
+        end
+        setreadonly(mt, true)
+    end
+
+    hookTweens()
+
+    task.spawn(function()
+        while uiHidden do
+            killSpeedVfx()
+            killHpBallVfx()
+            task.wait(0.25)
+        end
+    end)
+
     RunService:BindToRenderStep("SugarHideStageUI", 200, function()
+        local char = player.Character
+        if char then
+            local hum = char:FindFirstChild("Humanoid")
+            if hum then
+                local ori = char:GetAttribute("OriWalkSpeed")
+                if ori ~= nil then
+                    if hum.WalkSpeed ~= ori then
+                        hum.WalkSpeed = ori
+                    end
+                end
+            end
+        end
+
+        local cam = Workspace.CurrentCamera
+        if cam and cam.FieldOfView ~= 70 then
+            cam.FieldOfView = 70
+        end
+
+        killSpeedVfx()
+
         local gui = player:FindFirstChild("PlayerGui")
         local hud = gui and gui:FindFirstChild("Hud")
         local top = hud and hud:FindFirstChild("Top")
-        if not top then return end
-        local back = top:FindFirstChild("Return")
-        if back and back.Visible then
-            pcall(function() back.Visible = false end)
-        end
-        local boss = top:FindFirstChild("BossHP")
-        if boss and boss.Visible then
-            pcall(function() boss.Visible = false end)
+        if top then
+            local back = top:FindFirstChild("Return")
+            if back and back.Visible then
+                pcall(function() back.Visible = false end)
+            end
+            local boss = top:FindFirstChild("BossHP")
+            if boss and boss.Visible then
+                pcall(function() boss.Visible = false end)
+            end
         end
     end)
 end
