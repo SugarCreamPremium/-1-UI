@@ -1,4 +1,4 @@
--- Version 6.44
+-- Version 6.59
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -308,8 +308,8 @@ local function waitOreGone(ore, limit)
     local waited = 0
     while waited < limit do
         if not ore.Parent then return true end
-        task.wait(0.1)
-        waited = waited + 0.1
+        task.wait(0.03)
+        waited = waited + 0.03
     end
     return not ore.Parent
 end
@@ -496,8 +496,8 @@ local function waitPickup(before, limit)
     while waited < limit do
         local count = getPack()
         if count and before and count > before then return true end
-        task.wait(0.05)
-        waited = waited + 0.05
+        task.wait(0.02)
+        waited = waited + 0.02
     end
     return false
 end
@@ -807,77 +807,65 @@ end
 -- ============================================
 -- Auto Rebirth
 -- ============================================
--- ปุ่มรีเบิร์ธของเกมเช็คแค่ 2 อย่าง (GuiUtils/RebirthGUI.lua:82-97)
---   1) Helper.CheckIsMax(Value)  -> rebirth ถึงเพดานแล้ว ไม่งั้น
---   2) Helper.GetNeedLevel(Value + 1) <= level  แล้วยิง TryRebirthRE
+-- ปุ่มรีเบิร์ธของเกมเช็คแค่ 2 อย่าง แล้วยิงทันที (GuiUtils/RebirthGUI.lua:82-97)
+--   1) Helper.CheckIsMax(Value)              -> ถึงเพดานแล้วไม่ยิง
+--   2) Helper.GetNeedLevel(Value + 1) <= level -> ยิง
 --     Rebirth/TryRebirthRE:FireServer()   ไม่มีอาร์กิวเมนต์
---   NeedLevel = 25 * ลำดับ  ตรงกับ Config/Rebirth/Config.lua ทุกแถว
---     (แถวแรก 0 แล้ว +25 ทีละแถว ไปจนแถวสุดท้าย 1025)
---   เพดาน = 42  ไม่ใช่ 45
---     (Config/Rebirth/Helper.lua:3  u15 = #Config - 1 และ Config.lua มี 43 แถว = index 0..42)
---     ถ้าใช้เพดานผิดจะเป็นการยิงเกินจนเซิร์ฟเวอร์เงียบ ไม่ใช่แค่ช้าลง
+--   เกณฑ์เลเวล = 25 * ลำดับ  ตรงกับทุกแถวของ Config/Rebirth/Config.lua
+--     ไล่จากแถวแรก NeedLevel 0 แล้ว +25 ทีละแถว จนแถวสุดท้าย 1025
+--   ค่าที่อ่านมาตรง ๆ ได้คือ LocalPlayer.Eco.level และ LocalPlayer.Eco.rebirth
+--     (RebirthGUI.lua:35-37  NumberValue ทั้งคู่ อ่านค่าได้สดโดยไม่ต้องยิง remote)
 --
--- สาเหตุที่ทำให้ "เปิดไปนานๆ แล้วไม่ยอมรีเบิร์ธ" และวิธีกันไว้:
---   1) ตัวบอกสถานะลูปต้องคืน false เสมอ
---      เดิม error ครั้งเดียวก็ทำให้ coroutine ตายค้าง ๆ rebirthRunning ค้างเป็น true
---      ตั้งแต่นั้นสวิตช์จะเปิดลูปใหม่ไม่ได้อีก เพราะเงื่อนไข not rebirthRunning ไม่ผ่าน
---   2) ยิงติดกันเรื่อย ๆ ไม่มีวันหยุด
---      เดิมพอยิงไม่ขึ้น 3 ครั้งก็เลิกยิง แล้วไปนับต่อจนครบ 9 ครั้งถึงจะเริ่มใหม่
---      ตอนนั้นกดสวิตช์ปิด-เปิดก็ยังไม่ช่วย เพราะตัวนับไม่ถูกล้าง
---      ตอนนี้ยิงทุกรอบจนกว่าจะสำเร็จหรือเลเวลไม่พอ ห้ามมีทางหยุดยิง
---   3) ถ้ายิงติดกันหลายครั้งแล้วเลขยังไม่ขยับ = เซิร์ฟเวอร์ปฏิเสธ ไม่ใช่เลเวลไม่พอ
---      ข้อน่าจะเป็นเพราะยังอยู่ในสเตจ -> ออกจากสเตจเป็นครั้งคราว
---      แต่ต้องไม่บ่อยเกินไป ไม่งั้นจะไปตัดการฟาร์มทุกไม่กี่วินาที
---      (ดัมป์มีแต่โค้ดฝั่ง client ตรงนี้จึงเป็นการกันไว้ ไม่ใช่ข้อเท็จจริงที่ยืนยันได้)
-local MAX_REBIRTH = 42
+-- เพดาน = 41  ไม่ใช่ 42
+--   Config.lua มี 42 แถว (แถวแรกมี [0] ที่เหลือเรียงตามลำดับสุดท้าย NeedLevel 1025)
+--     Helper.lua:3  u15 = getTableLegth(Config) - 1 = 42 - 1 = 41
+--   CheckIsMax คืน true เมื่อ rebirth == 41 พอดี ช่วงนั้นห้ามยิงอีก
+--
+-- วิธีทำให้ "ถึงเกณฑ์แล้วรีเบิร์ธทันที"
+--   ออกจากสเตจก่อนยิงทุกครั้งที่ถึงเกณฑ์ แล้วยิงเดี๋ยวนั้น
+--     เดิมยิงจากในสเตตั้งแต่แรก แล้วค่อยลองออกทีหลังเมื่อยิงไม่ขึ้นหลายครั้ง
+--     ผลคือต้องรอเปล่าหลายสิบวินาทีก่อนจะรู้ว่าต้องออกก่อน
+--   การออกจากสเตจครั้งเดียวต่อหนึ่งการรีเบิร์ธ ไม่กินเวลาฟาร์ม เพราะเกณฑ์นี้ผ่านบ่อย
+--     (ExitFight(false, true) = ออกแบบไม่วาร์ป  StageUtils.lua:143-163)
+local MAX_REBIRTH = 41
 local NEED_LEVEL_STEP = 25
-local REBIRTH_EVERY = 0.5
-local REBIRTH_WAIT = 1.5     -- รอให้เลขขยับหลังยิง ไม่รอนานเกินไป ไม่งั้นลูปจะค้าง
-local ESCAPE_EVERY = 20     -- ยิงติดกันกี่ครั้งแล้วยังไม่ขึ้น ถึงลองออกจากสเตจหนึ่งครั้ง
-                          --   ยิงไม่งั้นหยุด ไม่ว่าจะออกจากสเตจหรือไม่ก็ตาม
+local REBIRTH_EVERY = 0.5      -- รอบล่าสุดแล้วเช็คเงื่อนไขใหม่
+local REBIRTH_WAIT = 0.8      -- รอให้เลขขยับหลังยิง สั้นพอ ไม่งั้นลูปจะค้าง
 
 local function canRebirth()
     local rebirth = getRebirth()
     local level = getLevel()
-    if not rebirth or not level then return false end
+    if rebirth == nil or level == nil then return false end
     if rebirth >= MAX_REBIRTH then return false end
     return level >= NEED_LEVEL_STEP * (rebirth + 1)
 end
 
--- เลเวลที่ต้องใช้ของดับรีเบิร์ถัดไป -> nil = ถึงเพดานแล้ว
-local function needLevel()
-    local rebirth = getRebirth()
-    if not rebirth or rebirth >= MAX_REBIRTH then return nil end
-    return NEED_LEVEL_STEP * (rebirth + 1)
+-- ออกจากสเตจแล้วรอสัญญาณว่าออกจริง -> คืน true ถ้าออกได้
+local function leaveStage(timeout)
+    if not player:GetAttribute("IntoFight") then return true end
+    exitFight(false, true)
+    local waited = 0
+    while waited < (timeout or 5) and player:GetAttribute("IntoFight") do
+        task.wait(0.02)
+        waited = waited + 0.02
+    end
+    return not player:GetAttribute("IntoFight")
 end
 
 local rebirthEnabled = false
 local rebirthRunning = false
-local rebirthFails = 0      -- ยิงติดกันกี่ครั้งแล้วยังไม่ขึ้น (ใช้ตัดสินว่าจะออกจากสเตจไหม)
 
 local function rebirthLoop()
     while rebirthEnabled do
         -- ครอบทั้งรอบไว้ ถ้ามีอะไรพังจะได้ไม่ทำให้ลูปตายค้าง
+        --   เดิม error ครั้งเดียวก็ทำให้ coroutine ตาย แล้ว rebirthRunning ค้างเป็น true
+        --   ตั้งแต่นั้นสวิตช์จะเปิดลูปใหม่ไม่ได้อีก
         pcall(function()
             if not rebirthEnabled then return end
-            if not canRebirth() then
-                rebirthFails = 0
-                return
-            end
+            if not canRebirth() then return end
 
-            -- ยิงซ้ำแล้วไม่ขึ้นนาน ๆ = เซิร์ฟเวอร์ปฏิเสธ ไม่ใช่รอเลเวล
-            --   ลองออกจากสเตจเป็นครั้งคราว แต่ต้องไม่หยุดยิง
-            --   ยิงต่อเสมอทั้งรอบนี้ ไม่ว่าจะออกจากสเตจสำเร็จหรือไม่ก็ตาม
-            if rebirthFails > 0 and rebirthFails % ESCAPE_EVERY == 0 then
-                if player:GetAttribute("IntoFight") then
-                    exitFight(false, true)
-                    local waited = 0
-                    while waited < 5 and player:GetAttribute("IntoFight") do
-                        task.wait(0.05)
-                        waited = waited + 0.05
-                    end
-                end
-            end
+            -- ออกจากสเตจก่อน แล้วค่อยยิงทันทีในรอบเดียวกัน
+            leaveStage(5)
 
             local remote = TryRebirthRE or getRemote("Rebirth", "TryRebirthRE")
             if not remote then return end
@@ -889,14 +877,8 @@ local function rebirthLoop()
             -- รอให้เลขขยับจริง กันยิงซ้ำถ้าเซิร์ฟเวอร์ช้า
             local waited = 0
             while waited < REBIRTH_WAIT and getRebirth() == before do
-                task.wait(0.1)
-                waited = waited + 0.1
-            end
-
-            if getRebirth() == before then
-                rebirthFails = rebirthFails + 1
-            else
-                rebirthFails = 0
+                task.wait(0.05)
+                waited = waited + 0.05
             end
         end)
         task.wait(REBIRTH_EVERY)
@@ -959,6 +941,36 @@ local function waitOutOfFight(timeout)
 end
 
 -- ============================================
+-- กันจอซูมตอนเข้า-จบสเตจ
+-- ============================================
+-- ตอนสเตจจบ เกมยิง tween ซูมเข้า 95 แล้ว 2.5 วิหลังซูมกลับมา 70
+--   (StageUtils.lua:213-218)
+--     CharUtils.SetWalkSpeedPercent(Character, 1.5, 100, "StageFinished")
+--     CameraUtils.TWFOV(TweenInfo.new(0.25), 95)
+--     task.delay(2.5, function() ... CameraUtils.TWFOV(TweenInfo.new(0.5), 70) end)
+--   ตัว tween คือ TweenService:Create(camera, {FieldOfView = v}):Play()
+--     (CameraUtils.lua:36-38)
+--   ค่าปกติ = 70 (CameraUtils.lua:41  ResetFOV ตั้งกลับเป็น 70)
+--
+-- tween ถูกสร้างในโมดูลของเกม เราหยุดหรือยกเลิกมันไม่ได้
+--   วิธีเดียวคือเขียนค่ากลับทุกเฟรมให้ทัน
+--   ผูกไว้ที่ priority สูงสุด = รันหลัง tween ของเกม เลยเห็นเป็น 70 ตลอด
+local DEFAULT_FOV = 70
+local fovLocked = false
+
+local function lockFov()
+    if fovLocked then return end
+    fovLocked = true
+    local RunService = game:GetService("RunService")
+    RunService:BindToRenderStep("SugarNoFov", 9999, function()
+        local cam = workspace.CurrentCamera
+        if cam and cam.FieldOfView ~= DEFAULT_FOV then
+            cam.FieldOfView = DEFAULT_FOV
+        end
+    end)
+end
+
+-- ============================================
 -- ฆ่ามอนให้หมดทั้งเซต แล้วเก็บของ
 -- ============================================
 -- ยิงทุกเฟรม ไม่ใช่ทุก 0.2 วิ เพราะมอนเลือดโตแบบทวีคูณ
@@ -1012,7 +1024,7 @@ local function runRound()
     -- 5) รอมอนเกิด (สูงสุด 10 วิ)
     --    ถ้าไม่มีมอนเกิด = สเตจนี้เล่นไม่ได้ เช่น ยังไม่ปลดล็อก
     --    (CreateStageEnemys จะเตือน "缺少敌人点位" แล้ว return ถ้าไม่มี EnemyPoint)
-    if not waitUntil(function() return countEnemies() > 0 end, 10, 0.02) then
+    if not waitUntil(function() return countEnemies() > 0 end, 10, 0.01) then
         if player:GetAttribute("IntoFight") then
             exitFight(false, true)
             waitOutOfFight(10)
@@ -1037,7 +1049,7 @@ local function runRound()
     --     (StageUtils.lua:206-208  repeat task.wait() until FinishedOreTab
     --      StageUtils.lua:212      OreUtils.CreateOres)
     --   ถ้าไม่รอ จะไปเก็บตอนที่ยังไม่มีของเลย = เสียของทั้งรอบนั้น
-    waitUntil(function() return stageDone() end, 3, 0.05)
+    waitUntil(function() return stageDone() end, 3, 0.02)
 
     -- 7) เก็บของทุกชิ้นด้วยตัวเองก่อนเสมอ
     --    ของเข้ากระเป๋าทันทีที่กดปุ่ม Collect ไม่มีขั้นตอนยืนยันทีหลัง
@@ -1066,10 +1078,10 @@ end
 local function farmLoop()
     while running do
         clearBlur()
+        -- ไม่หน่วงท้ายรอบ runRound จบที่การออกจากสเตจแล้ว
+        --   ซึ่งรอสัญญาณ IntoFight = nil จริง ๆ อยู่ข้างใน (ดู waitOutOfFight)
+        --   หน่วงเพิ่มตรงนี้คือเสียเวลาเปล่าเปลี่ยวรอบถัดไปช้าลงเท่านั้น
         runRound()
-        if running then
-            task.wait(0.2)
-        end
     end
     farmRunning = false
 end
@@ -1110,10 +1122,6 @@ local function setRebirth(value)
         rebirthRunning = true
         task.spawn(rebirthLoop)
     end
-    -- เพิ่งรีเบิร์ธไป = ตัวนับความล้มเหลวเก่าใช้ไม่ได้แล้ว
-    if rebirthEnabled then
-        rebirthFails = 0
-    end
 end
 
 -- ============================================
@@ -1136,6 +1144,9 @@ function AutoFarm.register(context)
     for i, name in ipairs(STAGE_NAMES) do
         display[i] = (name:gsub("_", " "))
     end
+
+    -- กันจอซูมเข้าออกตอนเข้า-จบสเตจ ตั้งครั้งเดียวตลอดอายุโมดูล
+    lockFov()
 
     local trainSection = tab:Section({Title = "Train", Opened = true})
     if trainSection then
