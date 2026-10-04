@@ -1,4 +1,4 @@
--- Version 7.23
+-- Version 7.34
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -187,12 +187,20 @@ local function killAllEnemies()
         --   ยิงซ้ำแล้วไม่ได้อะไร แต่ HurtEnemy จะวนเดินทั้งซากทุกเฟรมตลอด 3 วินาทีนั้น
         --   ยิงแต่ตัวที่ยังมีชีวิต = งานต่อเฟรมน้อยลงตามจำนวนซากที่ค้างอยู่
         if enemy:IsA("Model") and not enemy:GetAttribute("Dead") then
-            local hp = enemy:FindFirstChild("HPValue")
+            -- ตัด HP ให้ 0 ก่อนยิง แล้วยิงทับอีกที
+            --   เดิมยิง damage = HP + 1 ซึ่งควรตายทันทีอยู่แล้ว แต่ถ้ามอนตัวไหน
+            --   เลือดไม่ใช่ NumberValue หรือถูกเซิร์ฟเวอร์แก้ค่าแข่งเรา ก็จะเหลือเลือด
+            --   การตัด HP เองทำให้ไม่ต้องพึ่ง damage ขนาดไหนเลย
+            --     (HPCTRL.DamageOnce -> UpdateHPValue: 0 - damage = ติดลบ = ตาย)
+            --     (HPCTRL.lua:88-101, 113-124)
+            -- damage ต่อไปนี้ไม่มีผลกับการตายแล้ว เพราะ HP ถูกตัดเป็น 0 ก่อน
+            --   แต่ยังต้องส่งค่าที่เป็นบวก เพราะ SuperLootManager คูณค่านี้กับโอกาสดรอป
+            --     (SuperLootManager.client.lua:78  ทำ p3.Damage = ...)
             local damage = 1
+            local hp = enemy:FindFirstChild("HPValue")
             if hp and hp:IsA("NumberValue") then
-                damage = (tonumber(hp.Value) or 0) + 1
+                pcall(function() hp.Value = 0 end)
             end
-            if damage < 1 then damage = 1 end
             -- ต้องส่ง 3 อาร์กิวเมนต์: SuperLootManager.client.lua:78 ทำ p3.Damage = ...
             -- ถ้าส่งแค่ 2 จะ error ตรงนั้น
             pcall(function()
@@ -983,22 +991,84 @@ end
 --     (CameraUtils.lua:36-38)
 --   ค่าปกติ = 70 (CameraUtils.lua:41  ResetFOV ตั้งกลับเป็น 70)
 --
--- tween ถูกสร้างในโมดูลของเกม เราหยุดหรือยกเลิกมันไม่ได้
---   วิธีเดียวคือเขียนค่ากลับทุกเฟรมให้ทัน
---   ผูกไว้ที่ priority สูงสุด = รันหลัง tween ของเกม เลยเห็นเป็น 70 ตลอด
+-- แก้ 2 ชั้น เพราะชั้นเดียวเอาไม่อยู่
+--   ชั้นหลัก = hook TweenService:Create ไม่ให้ tween ที่แตะ FOV ถูกสร้าง
+--   ชั้นสำรอง = เขียน 70 ทับทุกเฟรม สำหรับการเขียนค่าตรง ๆ ที่ hook ไม่ครอบ
 local DEFAULT_FOV = 70
 local fovLocked = false
 
-local function lockFov()
-    if fovLocked then return end
-    fovLocked = true
+-- ---------- ทางหลัก: ไม่ให้ tween ที่แตะ FOV ถูกสร้างขึ้นมาเลย ----------
+--
+-- ทำไมวิธีเดิม (ไล่เขียนค่าทุกเฟรม) ไม่ได้ผล
+--   เพราะ TweenService อัปเดตค่ากล้องในเฟรมนั้น ๆ หลังจาก BindToRenderStep ของเรา
+--   ผลคือ เราเขียน 70 -> tween เขียนทับ 95 -> ภาพที่เรนเดอร์ออกมาเลยซูมไปตลอด
+--   พอเกม tween กลับมา 70 เราเขียน 70 ทับอีกรอบ จอเลย "หายเร็วขึ้น"
+--   นั่นคืออาการที่เห็น ไม่ใช่กล้องเสีย
+--
+-- จุดที่สั่งซูมทั้งหมดในเกมวิ่งผ่าน TweenService:Create ตัวเดียวกัน
+--   Utils/CameraUtils.lua:37    TWFOV  -> FinishStage ตอนจบสเตจ (0.25 วิ ไปที่ 95)
+--   Tool/CameraService.lua:569  ChangeFOV
+--   (CameraUtils.lua:41 ResetFOV เป็นการเขียนค่าตรง 70 อยู่แล้ว ไม่ต้องแตะ)
+local function blockFovTween()
+    local hook = hookmetamethod
+    if type(hook) ~= "function" then
+        local okG, g = pcall(getgenv)
+        if okG and type(g) == "table" then
+            hook = g.hookmetamethod
+            if type(hook) ~= "function" and type(g.hook) == "table" then
+                hook = g.hook.hookmetamethod
+            end
+        end
+    end
+    if type(hook) ~= "function" then return false end
+
+    local oldCreate = nil
+    local ok = pcall(function()
+        oldCreate = hook(game:GetService("TweenService"), "Create", function(self, tweenInfo, props)
+            if type(props) == "table" and props.FieldOfView ~= nil then
+                -- ทำสำเนาแทนการแก้ตารางของเกม กันไม่ให้กระทบ tween อื่น
+                --   เกมสร้างตารางใหม่ทุกครั้งอยู่แล้ว (CameraUtils.lua:37 สร้าง inline)
+                local clean = {}
+                local left = 0
+                for key, value in pairs(props) do
+                    if key ~= "FieldOfView" then
+                        clean[key] = value
+                        left = left + 1
+                    end
+                end
+                -- ถ้า tween ตัวนี้แตะ FOV อย่างเดียว เปลี่ยนเป้าหมายเป็นค่าปกติ
+                --   แทนที่จะลบออกจนตารางว่าง เพราะ tween ที่ไม่มีเส้นทางเลย
+                --   แล้ว Completed:Wait() ของเกมอาจค้าง (CameraService.lua:570)
+                if left == 0 then
+                    clean.FieldOfView = DEFAULT_FOV
+                end
+                props = clean
+            end
+            return oldCreate(self, tweenInfo, props)
+        end)
+    end)
+    return ok and type(oldCreate) == "function"
+end
+
+-- ---------- ทางสำรอง: เขียนค่าทับทุกเฟรม ----------
+-- ครอบไว้ให้การเขียนค่าตรง ๆ ที่ hook ไม่ได้ เช่น CameraService.lua:566
+--   CurrentCamera.FieldOfView = a2  (พารามิเตอร์ตัวที่สามเป็น true)
+-- priority 200 คือค่าสูงสุดที่ Roblox รับได้ ค่าที่ใหญ่กว่านี้จะถูกตัดทิ้ง
+local function forceFovEveryFrame()
     local RunService = game:GetService("RunService")
-    RunService:BindToRenderStep("SugarNoFov", 9999, function()
+    RunService:BindToRenderStep("SugarNoFov", 200, function()
         local cam = workspace.CurrentCamera
         if cam and cam.FieldOfView ~= DEFAULT_FOV then
             cam.FieldOfView = DEFAULT_FOV
         end
     end)
+end
+
+local function lockFov()
+    if fovLocked then return end
+    fovLocked = true
+    blockFovTween()
+    forceFovEveryFrame()
 end
 
 -- ============================================
@@ -1009,18 +1079,57 @@ end
 -- รอบนี้จบเมื่อมอนหมดจากโฟลเดอร์ 2 เฟรมติด หรือมีของตกแล้ว
 --   ไม่ใช่ "รอของตก" ล้วน ๆ เพราะถ้าเซิร์ฟเวอร์ไม่ยอมให้ของ จะค้างจนหมดเวลาทุกรอบ
 -- ซากมอนที่ตายแล้วไม่ถูกนับ เพราะเกมหน่วงลบอีก 3 วินาที (ดูหัว countEnemies)
+--
+-- การวัดแยก 2 อย่าง เพราะที่ผ่านมาเวลาที่นับเป็น "ฆ่า" ไม่ได้เป็นการฆ่าจริง
+--   เพราะ EnemyHitBE:Fire -> HurtEnemy -> CheckStageFinishedOnce -> FinishStage
+--     แล้ว FinishStage ไปค้างที่ repeat task.wait() until FinishedOreTab
+--       (StageUtils.lua:206-208)
+--   BindableEvent:Fire ให้ coroutine เดียวกับผู้เรียก เวลาที่รอเซิร์ฟเวอร์
+--     จึงถูกนับรวมอยู่ในช่วงนี้ ทำให้ดูเหมือนฆ่าเชื่องช้า
+--   จึงแยกเป็น: เฟรมที่ใช้จนมอนหมด (ฆ่าจริง) vs เวลารวม (รวมรอเซิร์ฟเวอร์)
+--   ตั้ง KILL_LOG_EVERY = 0 ถ้าไม่อยากเห็น
+local KILL_LOG_EVERY = 30
+local killLogRounds = 0
+local killLogFrames = 0
+local killLogKill = 0
+local killLogWait = 0
+local killLogAlive = 0
+
 local function killStageEnemies(limit)
     local mark = os.clock()
     local empty = 0
+    local frames = 0
+    local startAlive = countEnemies()
+    local deadAt = nil
+
     while running do
         local alive = countEnemies()
         if alive > 0 then
             empty = 0
             killAllEnemies()
         else
+            if not deadAt then deadAt = {frame = frames, time = os.clock()} end
             empty = empty + 1
-            if empty >= 2 or stageDone() then return true end
+            if empty >= 2 or stageDone() then
+                if KILL_LOG_EVERY > 0 then
+                    killLogRounds = killLogRounds + 1
+                    killLogAlive = killLogAlive + startAlive
+                    killLogFrames = killLogFrames + (deadAt and deadAt.frame or frames)
+                    killLogKill = killLogKill + (deadAt and (deadAt.time - mark) or 0)
+                    killLogWait = killLogWait + (os.clock() - (deadAt and deadAt.time or mark))
+                    if killLogRounds >= KILL_LOG_EVERY then
+                        local n = killLogRounds
+                        print(string.format(
+                            "[AutoFarm] %d รอบ: มอน %.1f ตัว | ฆ่าจริง %.0f เฟรม / %.3f วิ | รอหลังมอนตาย %.3f วิ",
+                            n, killLogAlive / n, killLogFrames / n, killLogKill / n, killLogWait / n))
+                        killLogRounds, killLogAlive = 0, 0
+                        killLogFrames, killLogKill, killLogWait = 0, 0, 0
+                    end
+                end
+                return true
+            end
         end
+        frames = frames + 1
         if os.clock() - mark > limit then return false end
         task.wait()  -- ครั้งละเฟรม
     end
