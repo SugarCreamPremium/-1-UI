@@ -1,4 +1,4 @@
--- Version 5.38
+-- Version 9.28
 -- แถบคราฟ (Forge)
 --
 -- กลไกของเกมที่ใช้ (อ่านจากดัมป์):
@@ -159,7 +159,10 @@ local WEAPON_STAT = {
     ["G_26"] = {708000000, nil, false},
     ["G_1001"] = {750, nil, false},
     ["G_1002"] = {2.2, 838400000, true},
-    ["G_1003"] = {1.2, 708400000, true},
+    -- G_1003 เป็นของธรรมดา Mythic ไม่ใช่ของดันเจอรี (Config/Weapon/Config.lua:540)
+    --   เดิมใส่ค่าของ K_1101 ผิด ทำให้ของจริงที่มี Train แค่ 900,000
+    --   ถูกคิดเป็น 708,400,000 = เท่าดาบ G_26 ที่ดีที่สุด ทำให้ของแย่มากแย่งที่จะสวมใส่
+    ["G_1003"] = {900000, nil, false},
     ["K_1"] = {1, nil, false},
     ["K_2"] = {5, nil, false},
     ["K_3"] = {12, nil, false},
@@ -188,6 +191,11 @@ local WEAPON_STAT = {
     ["K_26"] = {600000000, nil, false},
     ["K_1001"] = {1.1, 165000, true},
     ["K_1002"] = {1.65, 247500000, true},
+    -- K_1101 / G_1101 เป็นของดันเจอรีสายเอกซ์คลูซีฟ เดิมไม่มีในตาราง
+    --   itemValue คืน 0 ให้ -> ของแพงที่สุดในเกมกลับไม่มีวันได้ถูกสวมใส่
+    --   G_1101 ไม่มีเพดาน คูณค่าฐานที่ดีที่สุดเต็ม 1.95 -> แพงกว่า G_26 เสมอ
+    ["K_1101"] = {1.2, 708400000, true},
+    ["G_1101"] = {1.95, nil, true},
 }
 
 local ARMOR_STAT = {
@@ -275,8 +283,16 @@ local ENHANT_BOOST = {
 --   ใส่เกินจากนี้เซิร์ฟเวอร์ clamp ทิ้ง แร่ที่เกินก็เปล่าประโยชน์
 local MAX_ORE = {Weapon = 13, Hat = 4, Armor = 23}
 
+-- ยิงคำขอสวมใส่กี่ครั้งถ้าเซิร์ฟเวอร์ยังไม่ตอบรับ
+--   FireServer ไม่คืนผล ถ้ายิงทีเดียวแล้วไม่ติด ของดีก็จะค้างไม่ถูกสวมใส่
+local EQUIP_TRY = 2
+
 -- ForgeRF เอาแค่สองชนิดนี้  หมวกกับเกราะใช้ตัวเดียวกันแยกกันทีหลังด้วยจำนวนแร่
 local CONFIG_TYPE = {Weapon = "Weapon", Hat = "Armor", Armor = "Armor"}
+
+-- ช่องอุปกรณ์ที่สวมใส่ได้ ชื่อเดียวกับช่องใน Backpack.equiped
+--   ใช้ไล่สวมใส่ และไล่เป้าหมายการคราฟ (ลำดับตรงนี้คือลำดับที่คราฟ)
+local TARGETS = {"Weapon", "Hat", "Armor"}
 
 -- ของดีสุดที่คราฟได้ของแต่ละสาย ใช้แค่ข้อความแจ้งเตือน
 --   อาวุธ G_26      Train 708,000,000  Infinite
@@ -437,6 +453,8 @@ end
 -- ============================================
 -- ไม่ใช้แค่ตัวเลขดิบ เพราะของที่ได้จากดันเจอรีมีตัวคูณพิเศษที่ทำให้แพงกว่าของปกติทันที
 --   (Utils/BalanceUtils.lua:305-327  GetWeaponTrainValue / :412-436  GetArmorValue)
+--   คืน nil ถ้าเป็นไอเทมที่ไม่มีในตาราง  อย่าคืน 0
+--     ถ้าคืน 0 ของที่ไม่รู้จักจะดูเหมือน "แย่ที่สุด" แล้วไปตัดสินใจแทนของจริงได้
 
 -- ค่าฐานของอาวุธที่ดีที่สุดในกระเป๋า (ตัวที่ไม่ใช่ของดันเจอรี)
 --   BalanceUtils.lua:148-163  GetBestWeaponValue
@@ -469,12 +487,12 @@ end
 --   ช่อง Hat     -> พลังโจมตีเป็น % (Power)
 --   ช่อง Armor   -> กันชนเป็น % (Defence)
 local function itemValue(entry, have)
-    if type(entry) ~= "table" then return 0 end
+    if type(entry) ~= "table" then return nil end
     local boost = ENHANT_BOOST[tonumber(entry.Level) or 0] or 0
 
     if entry.Type == "Weapon" then
         local st = WEAPON_STAT[entry.ID]
-        if not st then return 0 end
+        if not st then return nil end
         local train = st[1]
         if not st[3] then
             return train * (1 + boost)
@@ -487,7 +505,7 @@ local function itemValue(entry, have)
 
     if entry.Type == "Armor" or entry.Type == "Hat" then
         local st = ARMOR_STAT[entry.ID]
-        if not st then return 0 end
+        if not st then return nil end
         local attri = st[1]
         if not st[3] then
             return attri * (1 + boost)
@@ -497,7 +515,7 @@ local function itemValue(entry, have)
         return base * (1 + boost)
     end
 
-    return 0
+    return nil
 end
 
 -- คืน uuid กับ entry ของชิ้นที่ใส่อยู่ในช่องนั้น
@@ -514,62 +532,82 @@ local function equipedItem(slot)
     return uuid, entry
 end
 
--- สวมใส่ถ้าของใหม่ดีกว่าของที่ใส่อยู่จริงๆ
-local function equipIfBest(entry, uuid, have)
-    local oldUuid, old = equipedItem(entry.Type)
-    if oldUuid == uuid then return false end
-    if itemValue(entry, have) <= itemValue(old, have) then return false end
+-- รอจนกว่าช่องที่ใส่อยู่จะเปลี่ยนเป็น uuid ที่ต้องการจริงๆ
+--   FireServer ไม่บอกผล ถ้าเซิร์ฟเวอร์ปฏิเสธ (ของยังไม่ทันซิงก / จังหวะชนกัน) ต้องรอสัญญาณแล้วลองใหม่
+local function waitEquiped(slot, uuid, timeout)
+    local function landed()
+        local eq = getEquiped()
+        return type(eq) == "table" and eq[slot] == uuid
+    end
+    if landed() then return true end
+
+    local done = false
+    packChanged = function() done = true end
+    local waited = 0
+    local step = 0.05
+    while not done and waited < (timeout or 1) do
+        task.wait(step)
+        waited = waited + step
+        if landed() then done = true break end
+    end
+    packChanged = nil
+    return done
+end
+
+-- ไล่ทั้งกระเป๋า หาชิ้นที่ดีที่สุดของช่องนั้น
+--   ไม่ดูแค่ชิ้นที่เพิ่งคราฟได้ เพราะของดีที่สุดของตัวอาจเป็นของที่มีอยู่ก่อนแล้ว
+--     เช่นตอนเปิดสวิตช์ครั้งแรก หรือหลังผู้ใช้ถอดของทิ้งเอง
+--   preferUuid คือชิ้นที่ใส่อยู่แล้ว ใช้ตัดสินเมื่อค่าเท่ากัน ไม่งั้นจะสลับของฟรีๆ
+local function bestInSlot(have, slotType, preferUuid)
+    if type(have) ~= "table" then return nil, nil, nil end
+    local bestUuid, bestEntry, bestVal = nil, nil, nil
+    for uuid, entry in pairs(have) do
+        if type(entry) == "table" and entry.Type == slotType then
+            local v = itemValue(entry, have)
+            -- ของที่ไม่รู้จัก (v = nil) ข้ามไป ไม่ให้มาแย่งเป็นตัวที่ดีที่สุด
+            if v and (not bestVal or v > bestVal or (v == bestVal and uuid == preferUuid)) then
+                bestVal, bestUuid, bestEntry = v, uuid, entry
+            end
+        end
+    end
+    return bestUuid, bestEntry, bestVal
+end
+
+-- สวมใส่ชิ้นที่ดีที่สุดของช่องนั้น แล้วรอยืนยันว่าเซิร์ฟเวอร์รับจริง
+--   คืน true เมื่อยิงคำขอสวมใส่ออกไปจริง (ไม่รวมกรณีช่องนั้นดีอยู่แล้ว)
+local function equipBestSlot(slotType)
+    local have = getHave()
+    if type(have) ~= "table" then return false end
+
+    local oldUuid, old = equipedItem(slotType)
+    local uuid, entry, val = bestInSlot(have, slotType, oldUuid)
+    if not uuid then return false end
+    if uuid == oldUuid then return false end
+
+    -- ของที่ใส่อยู่คืนค่าไม่ได้ (ID ไม่รู้จัก) ให้ถือว่ามันแย่กว่า แล้วสลับให้
+    local oldVal = itemValue(old, have)
+    if oldVal and val <= oldVal then return false end
 
     local remote = EquipRE or getRemote("Backpack", "TryEquipItemRE")
     if not remote then return false end
     EquipRE = remote
-    local ok = pcall(function() remote:FireServer(uuid, entry.Type) end)
-    return ok
-end
 
--- ============================================
--- หาของใหม่ที่เพิ่งได้จากการคราฟ
--- ============================================
--- ForgeRF คืน ID กับ Type เท่านั้น ไม่คืน UUID
---   (GuiUtils/ForgeGUI.lua:662-665 เอาแค่ v2.ID กับ v2.Type ไปใช้)
--- จึงต้องดูว่ากระเป๋าเปลี่ยนตรงไหน โดยเทียบจำนวนก่อน/หลัง
-local function snapshot(have)
-    local snap = {}
-    if type(have) ~= "table" then return snap end
-    for uuid, entry in pairs(have) do
-        if type(entry) == "table" then
-            snap[uuid] = tonumber(entry.Number) or 1
-        end
+    for _ = 1, EQUIP_TRY do
+        pcall(function() remote:FireServer(uuid, entry.Type) end)
+        if waitEquiped(slotType, uuid, 0.8) then return true end
     end
-    return snap
+    return false
 end
 
-local function findNewItem(before, wantId, wantType)
-    local have = getHave()
-    if type(have) ~= "table" then return nil, nil end
-
-    -- ID ของแต่ละชิ้นไม่ซ้ำกันข้ามสาย (G_26 / HArmor_14 / LHat_16) จับคู่ด้วย ID พอ
-    --   แต่ช่อง Type ที่คืนมาอาจเป็น "Armor" สำหรับทั้งหมวกและเกราะ
-    --   เพราะ GetBigType คืน Hat/Armor แยกอีกทีในช่องที่สองของค่าที่ได้
-    --   (Utils/ForgeUtils.lua:20-26) จังกระนั้นถ้าไม่ตรง ให้ยอมรับเกราะ/หมวกด้วย
-    local fallbackUuid, fallbackEntry = nil, nil
-    for uuid, entry in pairs(have) do
-        if type(entry) == "table" and entry.ID == wantId then
-            local num = tonumber(entry.Number) or 1
-            -- ของใหม่ที่ยังไม่เคยมี หรือกองเดิมที่เพิ่มขึ้นมา 1 ชิ้น
-            if before[uuid] == nil or num > before[uuid] then
-                if wantType and entry.Type == wantType then
-                    return uuid, entry
-                end
-                if entry.Type == "Armor" or entry.Type == "Hat" then
-                    fallbackUuid, fallbackEntry = uuid, entry
-                end
-            end
-        end
+-- ไล่ทีละช่อง สวมใส่ของที่ดีที่สุดที่มีในกระเป๋าจริงๆ
+--   คืนจำนวนช่องที่เพิ่งสั่งสวมใส่
+local function equipAllBest()
+    local changed = 0
+    for _, slot in ipairs(TARGETS) do
+        if equipBestSlot(slot) then changed = changed + 1 end
     end
-    return fallbackUuid, fallbackEntry
+    return changed
 end
-
 
 -- ============================================
 -- สถานะของโมดูล
@@ -579,13 +617,9 @@ local forgeRunning = false
 local forgeEquipBest = true
 local forgeTargets = {Weapon = true, Hat = true, Armor = true}
 
-local TARGETS = {"Weapon", "Hat", "Armor"}
 local TARGET_NAME = {Weapon = "อาวุธ", Hat = "หมวก", Armor = "เกราะ"}
 
--- เวลาที่ใช้ไปของรอบล่าสุด เอาไปโชว์เป็นข้อมูลประกอบ
-local lastForgeMs = {Weapon = 0, Hat = 0, Armor = 0}
-
--- เคยคราฟของเลเวลสูงสุดของแต่ละสายได้แล้วหรือยัง
+-- เคยคราฟของเลเวลสูงสุดของแต่ละสายได้แล้วหรือยัง ใช้กันแจ้งซ้ำ
 local madeBest = {Weapon = false, Hat = false, Armor = false}
 
 local function anyTargetOn()
@@ -608,9 +642,6 @@ local function forgeOnce(target)
     local ores, total = pickOres(have, target)
     if not ores or total < 4 then return false end
 
-    local before = snapshot(have)
-    local mark = os.clock()
-
     local ok, res = pcall(function()
         return ForgeRF:InvokeServer({ConfigType = CONFIG_TYPE[target], UUIDList = ores})
     end)
@@ -622,24 +653,22 @@ local function forgeOnce(target)
     -- รอสัญญาณว่ากระเป๋าเปลี่ยนแล้วค่อยไปต่อ แทนการนอนตายตัว
     waitPackChange(3)
     refreshData()
-    have = getHave()
 
-    local uuid, entry = findNewItem(before, made.ID, made.Type)
-    if not uuid then
-        lastForgeMs[target] = (os.clock() - mark) * 1000
-        return true
-    end
-
+    -- แจ้งของเลเวลสูงสุดที่คราฟได้ ไม่ผูกกับการหา UUID
+    --   เดิมรอหา UUID ก่อน ถ้าหาไม่เจอข้อความนี้จะไม่ขึ้นไปเลย แม้คราฟโดนจริง
     if made.ID == TARGET_BEST[target] and not madeBest[target] then
         madeBest[target] = true
         notify("คราฟได้ของเลเวลสูงสุด", TARGET_BEST[target] .. " (" .. TARGET_NAME[target] .. ")")
     end
 
-    if forgeEquipBest and type(have) == "table" then
-        equipIfBest(entry, uuid, have)
+    -- ไล่สวมใส่ของที่ดีที่สุดของทุกช่องจากทั้งกระเป๋า
+    --   ไม่ใช่แค่ชิ้นที่เพิ่งคราฟได้ เพราะ ForgeRF ไม่คืน UUID
+    --   การเดา UUID จากกระเป๋าเป็นไปได้ว่าจะได้ชิ้นเก่าที่ใส่อยู่แล้ว
+    --   แล้วของใหม่ที่เพิ่งได้มาก็ไม่มีวันถูกสวมใส่
+    if forgeEquipBest then
+        equipAllBest()
     end
 
-    lastForgeMs[target] = (os.clock() - mark) * 1000
     return true
 end
 
@@ -678,6 +707,8 @@ local function setForgeEnabled(value)
     if forgeEnabled then
         refreshRemotes()
         refreshData()
+        -- เปิดสวิตช์ครั้งแรกก็ต้องสวมใส่ของที่ดีที่สุดที่มีอยู่แล้ว ไม่ใช่รอคราฟของใหม่
+        if forgeEquipBest then pcall(equipAllBest) end
         if not forgeRunning then
             forgeRunning = true
             task.spawn(forgeLoop)
@@ -687,56 +718,12 @@ end
 
 local function setForgeEquipBest(value)
     forgeEquipBest = value == true
+    -- เปิดสวมใส่อัตโนมัติตอนนั้นเลย = สวมใส่ของที่ดีที่สุดให้หน่อย ไม่งั้นรอคราฟของใหม่
+    if forgeEquipBest and refreshData() then pcall(equipAllBest) end
 end
 
 local function setForgeTarget(name, value)
     forgeTargets[name] = value == true
-end
-
-
--- ============================================
--- แถบสถานะ
--- ============================================
-local labels = {}
-
--- Paragraph ไม่มี SetValue แต่มี SetDesc ของเฟรมข้างใน
-local function setDesc(entry, text)
-    if not entry then return end
-    entry.Desc = text
-    pcall(function() entry.ParagraphFrame:SetDesc(text) end)
-end
-
-local function updateStatus()
-    local parts = {}
-    for _, name in ipairs(TARGETS) do
-        if madeBest[name] then
-            parts[#parts + 1] = TARGET_NAME[name] .. " " .. TARGET_BEST[name]
-        end
-    end
-    if #parts == 0 then
-        setDesc(labels.Best, "ยังไม่ได้สักชิ้น")
-    else
-        setDesc(labels.Best, table.concat(parts, " · "))
-    end
-
-    local times = {}
-    for _, name in ipairs(TARGETS) do
-        if lastForgeMs[name] > 0 then
-            times[#times + 1] = string.format("%s %.0fms", TARGET_NAME[name], lastForgeMs[name])
-        end
-    end
-    if #times == 0 then
-        setDesc(labels.Time, "ยังไม่ได้คราฟ")
-    else
-        setDesc(labels.Time, table.concat(times, " · "))
-    end
-end
-
-local function statusLoop()
-    while true do
-        updateStatus()
-        task.wait(1)
-    end
 end
 
 
@@ -759,7 +746,7 @@ function Forge.register(context)
     end
 
     section:Toggle({
-        Title = "เริ่ม Auto คราฟ",
+        Title = "Auto Forge",
         Desc = "คราฟไปเรื่อยๆ ตามที่เลือกไว้ข้างล่าง เลือกได้หลายแบบพร้อมกัน",
         Value = false,
         Callback = setForgeEnabled,
@@ -767,7 +754,7 @@ function Forge.register(context)
 
     section:Toggle({
         Title = "สวมใส่อุปกรณ์ที่ดีที่สุด",
-        Desc = "เทียบค่าจริงแล้วสวมให้เอง ดาบดูพลังโจมตี หมวกดูพลังโจมตี% เกราะดูกันชน% (นับเลเวลอัปเกรดของชิ้นนั้นด้วย)",
+        Desc = "ไล่ทั้งกระเป๋าทุกครั้งที่คราฟเสร็จ แล้วสวมใส่ของที่ดีที่สุดของแต่ละช่องให้อัตโนมัติ",
         Value = true,
         Callback = setForgeEquipBest,
     })
@@ -776,36 +763,24 @@ function Forge.register(context)
 
     section:Toggle({
         Title = "อาวุธ (Weapon)",
-        Desc = "ใช้แร่ 13 ชิ้น = ได้ดาบสาย Great ทุกครั้ง ของดีสุดที่คราฟได้คือ G_26",
+        Desc = "ใช้แร่ 13 ชิ้นในการสร้างอาวุธที่ดีที่สุด",
         Value = true,
         Callback = function(value) setForgeTarget("Weapon", value) end,
     })
 
     section:Toggle({
         Title = "หมวก (Hat)",
-        Desc = "ใช้แร่ 4 ชิ้น = ได้หมวกสาย Light ทุกครั้ง ของดีสุดที่คราฟได้คือ LHat_16",
+        Desc = "ใช้แร่ 4 ชิ้นในการสร้างหมวกที่ดีที่สุด",
         Value = true,
         Callback = function(value) setForgeTarget("Hat", value) end,
     })
 
     section:Toggle({
         Title = "เกราะ (Armor)",
-        Desc = "ใช้แร่ 23 ชิ้น = ได้เกราะสาย Heave ทุกครั้ง ของดีสุดที่คราฟได้คือ HArmor_14",
+        Desc = "ใช้แร่ 23 ชิ้นในการสร้างเกราะที่ดีที่สุด",
         Value = true,
         Callback = function(value) setForgeTarget("Armor", value) end,
     })
-
-    section:Paragraph({
-        Title = "วิธีเลือกแร่",
-        Desc = "ใช้แร่ชนิดเดียวทั้งชุด และเลือกชนิดที่ดีที่สุดที่มีในกระเป๋า "
-            .. "เรียงจากเลเวลขั้นต่ำสูงสุดก่อน แล้วค่อยดูค่า Power "
-            .. "แร่หลายชนิดทำให้เซิร์ฟเวอร์สุ่มได้เลเวลต่ำกว่าที่ควร",
-    })
-
-    labels.Best = section:Paragraph({Title = "ของเลเวลสูงสุดที่คราฟได้แล้ว", Desc = "ยังไม่ได้สักชิ้น"})
-    labels.Time = section:Paragraph({Title = "เวลาต่อรอบ", Desc = "..."})
-
-    task.spawn(statusLoop)
 end
 
 return Forge
