@@ -1,4 +1,4 @@
--- Version 6.27
+-- Version 6.33
 -- แถบ Auto Farm (วางไว้บนสุด)
 --
 -- วงจรของสเตจ: สั่งให้มอนเกิด -> ฆ่ามอนครบ -> ของตก -> เก็บ -> ออก
@@ -957,65 +957,14 @@ local function waitOutOfFight(timeout)
 end
 
 -- ============================================
--- เกิดมอนรัว ในสเตจเดิม ไม่ต้องออก-เข้าใหม่ทุกครั้ง
+-- ฆ่ามอนให้หมดทั้งเซต แล้วเก็บของ
 -- ============================================
--- เกมมีระบบเกิดมอนซ้ำอยู่แล้ว แต่ตั้งไว้ 30 วินาที:
---   FinishStage:198-203   หลังสเตจจบ -> IsEnemy=false, IsWaitRebirth=true,
---                         RebirthTick = ServerTime + 30
---   StageUtils:96-110     ทุก 1 วินาที ถ้า RebirthTick <= เวลาปัจจุบัน -> CreateStageEnemys ใหม่
---   CreateStageEnemys:259 เกิดมอบชุดใหม่ = ยิง StageFinishedRF อีกครั้ง = ได้ของอีก 1 ชุด
---                         ยิง EnemyHitBE ไปเรื่อย ๆ ก็ได้ของรัว ๆ ตามที่ต้องการ
---
--- ตัวเลข 30 วินาทีนั้นมาจาก workspace.ServerTime ซึ่งเป็น attribute ที่อ่านได้จากฝั่งเรา
---   (StageUtils.lua:94 และ :203)
---   เราเขียน attribute นี้ทับเองได้แบบ local ไม่กระทบเซิร์ฟเวอร์ (เซิร์ฟเวอร์คุมค่านี้เอง)
---   พอเวลาที่เราเขียนเดินหน้ากว่า RebirthTick เกมก็เกิดมอนชุดต่อไปทันที
---   เหลือแค่รอ heartbeat ของเกมรอบถัดไป ไม่ถึง 1 วินาที
---
---   ข้อควรระวัง: อย่าเอา attribute ที่เราเขียนไปต่อกับตัวเอง (บวกทีละรอบ = เพี้ยนเรื่อย ๆ)
---   ต้องคำนวณจากเวลาจริงทุกครั้ง เวลาจริงคือ workspace:GetServerTimeNow()
---   ซึ่งไม่โดนผลของการเขียน attribute แต่ละครั้ง (ต่างจาก GetAttribute("ServerTime"))
-local TIME_OFFSET = 45
-local boostRunning = false
-
-local function realServerTime()
-    local ok, now = pcall(function() return workspace:GetServerTimeNow() end)
-    if ok and type(now) == "number" then return now end
-    return tonumber(workspace:GetAttribute("ServerTime"))
-end
-
--- เดินเวลาไปข้างหน้าทุก 0.2 วิ เพื่อให้เกมเข้าเงื่อน IsCanInto + RebirthTick ทันที
-local function startTimeBoost()
-    if boostRunning then return end
-    if not realServerTime() then return end  -- ไม่มี attribute นี้ = ข้ามไป ฟาร์มแบบเดิมก็ยังได้
-    boostRunning = true
-    task.spawn(function()
-        while boostRunning and running do
-            local now = realServerTime()
-            if now then
-                pcall(function() workspace:SetAttribute("ServerTime", now + TIME_OFFSET) end)
-            end
-            task.wait(0.2)
-        end
-        -- คืนค่าเวลาจริงก่อนเลิก ไม่งั้นตัวจับเวลาอื่นของเกมจะเพี้ยนค้างไว้
-        local back = realServerTime()
-        if back then
-            pcall(function() workspace:SetAttribute("ServerTime", back) end)
-        end
-        boostRunning = false
-    end)
-end
-
-local function stopTimeBoost()
-    boostRunning = false
-end
-
--- ฆ่ามอนชุดนี้จนหมด = ยิงทุกเฟรม ไม่ใช่ทุก 0.2 วิ
---   มอนเลือดโตแบบทวีคูณ ยิงช้ากว่านี้คือเสียเวลาในช่วงที่ต้องรอมอนตาย
---     (ดูหัว killAllEnemies)
---   ขอบเขตรอบ = มอนหมดจากโฟลเดอร์ 2 เฟรมติด หรือมีของตกแล้ว
---     ไม่ใช่ "รอของตก" ล้วน ๆ เพราะถ้าเซิร์ฟเวอร์ไม่ยอมให้ของ จะค้างจนหมดเวลาทุกรอบ
-local function killWave(limit)
+-- ยิงทุกเฟรม ไม่ใช่ทุก 0.2 วิ เพราะมอนเลือดโตแบบทวีคูณ
+--   ยิงช้ากว่านี้คือเสียเวลาในช่วงที่ต้องรอมอนตาย (ดูหัว killAllEnemies)
+-- รอบนี้จบเมื่อมอนหมดจากโฟลเดอร์ 2 เฟรมติด หรือมีของตกแล้ว
+--   ไม่ใช่ "รอของตก" ล้วน ๆ เพราะถ้าเซิร์ฟเวอร์ไม่ยอมให้ของ จะค้างจนหมดเวลาทุกรอบ
+-- ซากมอนที่ตายแล้วไม่ถูกนับ เพราะเกมหน่วงลบอีก 3 วินาที (ดูหัว countEnemies)
+local function killStageEnemies(limit)
     local mark = os.clock()
     local empty = 0
     while running do
@@ -1069,35 +1018,35 @@ local function runRound()
         return
     end
 
-    -- 6) ฟาร์มรัว: ฆ่ารอบแรก เก็บของ แล้วรอมอนชุดถัดไปที่เกมเกิดให้เอง
-    --    เร่งเวลาไว้ตลอดช่วงนี้ เพื่อตัดรอ 30 วินาทีของเกมออก (ดูหัว startTimeBoost)
-    --    เกมเกิดรอบถัดไปให้เอง จึงได้ของรัว ๆ โดยไม่ต้องออกจากสเตจเลย
-    startTimeBoost()
-    while running do
-        if not killWave(30) then break end
-
-        -- ของยังไม่ตกทันทีที่มอนตาย
-        --   FinishStage รอคำตอบจากเซิร์ฟเวอร์ก่อนค่อยสร้างของทิ้งพื้น
-        --     (StageUtils.lua:206-208  repeat task.wait() until FinishedOreTab
-        --      StageUtils.lua:212      OreUtils.CreateOres)
-        --   ถ้าไม่รอ จะไปเก็บตอนที่ยังไม่มีของเลย = เสียของทั้งรอบนั้น
-        waitUntil(function() return stageDone() end, 3, 0.05)
-
-        -- เก็บของทุกชิ้นด้วยตัวเองเสมอ
-        --   ออกจากสเตจแล้ว OreUtils.CleanOres() ลบแร่ที่ยังไม่ได้เก็บทิ้งทั้งหมด
-        --     (StageUtils.lua:157)  ปล่อยให้เกมเก็บเองคือไม่ได้ของ ถือว่าทิ้งของฟรี
-        --   และ ClaimedAllOreRE ยิงแล้วของก็ถูกล้างทิ้งเหมือนกัน ไม่ต้องยิง
-        local picked = collectOres()
-        if picked == 0 and collectWarnMsg and not collectWarned then
-            notify("เก็บของไม่ได้", collectWarnMsg)
+    -- 6) ฆ่ามอนทั้งเซตจนหมด
+    --    ต้องยิงไปเรื่อย ๆ ไม่ใช่ยิงรอบเดียว เพราะ FinishStage
+    --    จะสร้างของต่อเมื่อทุกตัวใน EnemyTab ตายครบเท่านั้น
+    --    timeout 30 วิ เผื่อ EnemyTab ถูกล้างจนยิงไม่เข้า
+    if not killStageEnemies(30) then
+        if player:GetAttribute("IntoFight") then
+            exitFight(false, true)
+            waitOutOfFight(10)
         end
-        -- รอมอนชุดถัดไป ไม่เกิน 4 วิ
-        --   เกิด = ได้ของอีกชุด, ไม่เกิด = สเตจนี้เกิดซ้ำไม่ได้ -> ออกไปเข้าใหม่แทน
-        if not waitUntil(function() return countEnemies() > 0 end, 4, 0.02) then break end
+        return
     end
-    stopTimeBoost()
 
-    -- 7) ออกจากสเตจ (ไม่ยิง ClaimedAllOreRE)
+    -- ของยังไม่ตกทันทีที่มอนตาย
+    --   FinishStage รอคำตอบจากเซิร์ฟเวอร์ก่อนค่อยสร้างของทิ้งพื้น
+    --     (StageUtils.lua:206-208  repeat task.wait() until FinishedOreTab
+    --      StageUtils.lua:212      OreUtils.CreateOres)
+    --   ถ้าไม่รอ จะไปเก็บตอนที่ยังไม่มีของเลย = เสียของทั้งรอบนั้น
+    waitUntil(function() return stageDone() end, 3, 0.05)
+
+    -- 7) เก็บของทุกชิ้นด้วยตัวเองเสมอ
+    --    ออกจากสเตจแล้ว OreUtils.CleanOres() ลบแร่ที่ยังไม่ได้เก็บทิ้งทั้งหมด
+    --      (StageUtils.lua:157)  ปล่อยให้เกมเก็บเองคือไม่ได้ของ ถือว่าทิ้งของฟรี
+    --    และ ClaimedAllOreRE ยิงแล้วของก็ถูกล้างทิ้งเหมือนกัน ไม่ต้องยิง
+    local picked = collectOres()
+    if picked == 0 and collectWarnMsg and not collectWarned then
+        notify("เก็บของไม่ได้", collectWarnMsg)
+    end
+
+    -- 8) ออกจากสเตจ แล้วเข้าใหม่ในรอบถัดไป
     --    ExitFight จะเรียก OreUtils.CleanOres() ลบแร่ที่ยังไม่ได้เก็บทิ้งทั้งหมด
     --      (StageUtils.lua:157) เก็บเองไว้แล้วข้างบนทุกชิ้นตอนนี้
     --    skipWarp = true เพราะเราไม่วาร์ปไปไหน ไม่ต้องโดนลากกลับจุดเกิด
